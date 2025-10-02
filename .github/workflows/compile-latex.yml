@@ -15,7 +15,7 @@ jobs:
           working_directory: Literature
       
       - name: Upload PDF
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: SAD-Literature-Review
           path: Literature/main.pdf
