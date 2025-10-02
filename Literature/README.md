@@ -1,9 +1,9 @@
 # SAD: How Does Cloudiness Matter?
-## A Collaborative Literature Review
+## A Collaborative Reading List
 
 ![Build Status](https://github.com/itsshaonlee/spf/workflows/Build%20LaTeX%20document/badge.svg)
 
-This repository contains a categorized bibliography exploring the relationship between sunlight exposure, cloudiness, and various outcomes including economic behavior, health, education, and political behavior.
+This repository contains an annotated bibliography organized by theme, exploring the relationship between sunlight exposure, cloudiness, and various outcomes including economic behavior, health, education, and political behavior.
 
 **Latest PDF**: After each commit, a compiled PDF is automatically generated. See [Accessing the Compiled PDF](#accessing-the-compiled-pdf) below.
 
