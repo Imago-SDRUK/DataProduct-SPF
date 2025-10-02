@@ -164,6 +164,3 @@ pdflatex main.tex
 
 Requires: LaTeX distribution with biblatex, biber, and required packages.
 
-## License
-
-[Add your license information here]
