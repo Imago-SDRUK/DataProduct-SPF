@@ -1,0 +1,59 @@
+\documentclass[a4paper,12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage[american]{babel}
+\usepackage[style=apa, backend=biber, doi=true, url=true]{biblatex}
+\usepackage{csquotes}
+\usepackage{hyperref}
+\DeclareLanguageMapping{american}{american-apa}
+
+% Set hyperlink color options
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    citecolor=blue
+}
+
+% Load bibliography file
+\addbibresource{SAD.bib}
+
+% Define custom bibliography format to include abstracts
+\renewbibmacro*{finentry}{%
+    \iffieldundef{abstract}
+    {}
+    {\par\smallskip\textbf{Abstract:} \printfield{abstract}\par\smallskip}%
+    \finentry
+}
+
+% Define filters for each topic
+\defbibfilter{economics}{keyword={economics}}
+\defbibfilter{health}{keyword={health}}
+\defbibfilter{theory}{keyword={theory}}
+\defbibfilter{politics}{keyword={politics}}
+\defbibfilter{climate}{keyword={climate}}
+\defbibfilter{education}{keyword={education}}
+\defbibfilter{data}{keyword={data}}
+
+\title{SAD: How Does Cloudiness Matter?\\
+\large A (very preliminary) Reading List}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+
+% Include all entries from the .bib file
+\nocite{*}
+
+% Print separate bibliographies by theme
+\printbibliography[title={Economic Behavior}, heading=subbibliography, filter=economics]
+\printbibliography[title={Educational outcomes}, heading=subbibliography, filter=education]
+\printbibliography[title={Political Behavior}, heading=subbibliography, filter=politics]
+\printbibliography[title={Health}, heading=subbibliography, filter=health]
+%\printbibliography[title={Climate and Environmental Patterns}, heading=subbibliography, filter=climate]
+\printbibliography[title={Theoretical Frameworks}, heading=subbibliography, filter=theory]
+\printbibliography[title={Datasets}, heading=subbibliography, filter=data]
+\end{document}
