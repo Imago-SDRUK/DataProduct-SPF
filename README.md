@@ -28,7 +28,7 @@ This repository uses a dual-licensing approach:
 
 See the [LICENSE](LICENSE) file for full details.
 
-
+ 
 ## 🗂️ Repository Structure
 
 - `assets/` — Images, diagrams, and other media files
