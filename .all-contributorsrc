@@ -29,6 +29,15 @@
       "contributions": [
         "doc"
       ]
+    },
+    {
+      "login": "vwvbrand",
+      "name": "Vitalii Kriukov",
+      "avatar_url": "https://avatars.githubusercontent.com/u/59083235?v=4",
+      "profile": "https://github.com/vwvbrand",
+      "contributions": [
+        "review"
+      ]
     }
   ],
   "contributorsPerLine": 7,
