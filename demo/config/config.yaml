@@ -1,0 +1,30 @@
+### THIS CONFIGURATION FILES LISTS PARAMETERS FOR THE PRODUCTION OF ANNUAL CLOUD PROBABILITY PRODUCT (SPF)
+
+# INPUT - area of interest
+in_area: 
+    tiles_path: "data/uk_20km_grid.gpkg"
+    tiles_of_interest: ["NZ26","NZ24","NZ04","NZ06","NZ44","NZ46"]
+
+# INPUT - satellite collections  
+in_stac:
+    api_url: "https://earth-search.aws.element84.com/v1"
+    collection: "sentinel-2-c1-l2a"
+    time:
+        year: 2024
+    bands_of_interest: ["cloud", "scl"]
+
+# OUTPUT  
+out:
+    res: 20
+    target_crs: 27700
+    out_bands: ['cloud_prob', 'valid_count']
+    target_dtype: "float32"
+    resampling: "nearest"
+    out_format: "COG" 
+    area_name: "Newcastle"
+
+# DASK CONFIG
+dask:
+    chunks_size: {'time': 40}
+
+    
