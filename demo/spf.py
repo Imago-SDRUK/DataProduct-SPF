@@ -1,8 +1,9 @@
 #pip install odc-stac pystac-client dask
 
-#pip install odc-stac pystac-client dask
+# NOTE: if `imago-utils` is mounted as an extra volume to your docker, use the following:
 import sys
 sys.path.append('/external_libs')
+# NOTE: then run `-pip install -e /external_libs`
 
 import numpy as np
 import pandas as pd
