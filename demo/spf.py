@@ -1,5 +1,9 @@
 #pip install odc-stac pystac-client dask
 
+#pip install odc-stac pystac-client dask
+import sys
+sys.path.append('/external_libs')
+
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -16,12 +20,16 @@ import dask.dataframe as dd
 
 import yaml
 import warnings
+import time
 
 from dask.distributed import Client as DaskClient, LocalCluster
 from dask import delayed, compute
-import time
-
 #from dask_jobqueue import SLURMCluster
+
+#EXTERNAL
+from imago_utils.io.downloader import load_tile, to_geotif
+from imago_utils.utils.mask import apply_scl_mask
+from imago_utils.utils.config import ResampleEnum, OutputFormatEnum, DataTypeEnum, CollectionEnum
 
 def get_cfg(config, path, default=None):
     """Access nested dict values using dot notation, warn if missing."""
@@ -31,9 +39,10 @@ def get_cfg(config, path, default=None):
         if isinstance(value, dict) and key in value:
             value = value[key]
         else:
-            warnings.warn(f"[INFO] Missing key: '{path}' — using default={default!r}")
+            warnings.warn(f"=Missing key: '{path}' — using default={default!r}")
             return default
     return value
+# TODO - design suppression of warnings if multiple (as multiple processes use function)
 
 with open("config/config.yaml") as f:
     cfg = yaml.safe_load(f)
@@ -93,63 +102,6 @@ def inspect_search(items,index=0):
         print(f"Error checking item[{index}]: {e}")
         print("-" * 40)
 
-def mask_with_band(data, origin_band, mask_band, dtype_origin=None, dtype_mask=None, mask_nodata=0, fill_value=-1):
-    """
-    Replaces values of one of the bands based on the no-data values of another band.
-    
-    In the case of SPF product, it replaces values of the `cloud` band if values in the `SCL` mask are 0.
-    Rules:
-    - if SCL == 0 → cloud = -1
-    - if SCL != 0 → keep cloud as is
-    - assign -1 as the new no-data value for the cloud band
-    - ensure no NaNs remain (fill them with -1)
-    
-    Parameters:
-    data (xarray.Dataset): original dataset with `cloud` and `scl` variables
-    origin_band (str): original dataset band to mask
-    mask_band (str): original dataset band used as a mask
-    dtype_origin (str or np.dtype, optional): dtype for the origin band. If None, inferred from the origin band.
-    dtype_mask (str or np.dtype, optional): dtype for the mask band. If None, inferred from the mask band.
-    mask_nodata (int or float, optional): value in the mask which considered to be no data value. In Sentinel 2, SCL band, it is 0
-    fill_value (int or float, optional): value assigned to the origin band where `mask == mask_nodata` (default=-1).
-    
-    Returns:
-    masked (xarray.DataArray): output array with masked `cloud` band.
-
-
-    Usage example:
-    cloud_masked=mask_with_band(data, origin_band="cloud", mask_band="scl", dtype_origin="float32", dtype_mask="int16", mask_nodata=0, fill_value=-1):
-    """
-    
-    print(("-" * 40 + "\n") * 2, end="")
-    # DEBUG
-    print(f"Starting masking of '{origin_band}' using '{mask_band}'...")
-    
-    origin = data[origin_band].astype(dtype_origin).copy()
-    mask = data[mask_band].astype(dtype_mask)
-
-    #DEBUG
-    print(f"{origin_band} dimensions: {origin.dims}")
-    print(f"{mask_band} dimensions: {mask.dims}")
-    
-    # apply rules
-    masked = origin.where(mask != mask_nodata, fill_value)
-
-    # replace any remaining NaNs with -1
-    masked = masked.fillna(fill_value)
-    # assign -1 as the nodata value for output
-    masked.attrs["nodata"] = fill_value
-
-    # DEBUG:
-    print("Type:", type(masked))
-    print("Name:", masked.name)
-    print("Dimensions:", masked.dims)
-    print("Coordinates:", list(masked.coords))
-    print(f"{fill_value} is set as the no-data value (no NaNs remain).")
-    print("-" * 40)
-    
-    return masked
-
 def create_geobox(area, crs, resolution):
     """Creates a geobox object from the initial bounding box, reprojected to the target CRS. 
     The target CRS should be the same as the desired CRS of output GeoTIFF
@@ -181,152 +133,7 @@ def create_geobox(area, crs, resolution):
 
     return geobox
 
-def to_geotif(
-    dataset,
-    bands_of_interest:list=None,
-    reproject:int|None=None,
-    out_path:str|None=None,
-    out_format:str="GTiff"
-):
-    """
-    Saves an xarray Dataset or DataArray with multiple variables as Geotiff/COG.
-    Parameters:
-    dataset (xarray.Dataset or xarray.DataArray): processed dataset/array to be saved
-    bands_of_interest (list): list of bands to include, if None all variables included
-    reproject (int|None): EPSG code of target CRS (if needs reprojecting the dataset). If not given, the dataset will be written in its current CRS.
-    out_path (str, optional): path for output Geotiff.
-    out_format (str, default="GTiff"): output format, must match GDAL/rasterio drivers
-
-    Returns
-    image_out (str or None): path to the written GeoTIFF.
-
-    Notes:
-    - This is adapted from https://discourse.pangeo.io/t/comparing-odc-stac-load-and-stackstac-for-raster-composite-workflow/4097 and 
-    https://discourse.pangeo.io/t/can-a-reprojection-change-of-crs-operation-be-done-lazily-using-rioxarray/4468
-    - reprojection is implemented as optional if STAC collections were previously loaded without reprojection to avoid chunking artefacts.
-    - `odc.geo.xr.xr_reproject` is used instead of `rio.reproject` as `rio.reproject` triggers Dask chunks breakdown
-    - `odc.reproject` is not used as this command should contain odc metadata
-    """
-    from odc.geo.xr import xr_reproject
-    
-    if isinstance(dataset, xr.DataArray):
-        print(f"Dataset/array: Array")
-        image = dataset.squeeze('year')
-    
-    else:
-        print(f"Dataset/array: Dataset")
-        print(f"Bands of interest are (1): {bands_of_interest}")
-        image = (
-            dataset[bands_of_interest]
-            .to_array(dim="band")
-            .squeeze('year')
-            .transpose('band','y', 'x')
-            .astype(target_dtype)
-        )
-
-    """geobox=create_geobox(area=tiles, crs=reproject, resolution=res)"""
-        
-    # reproject if defined
-    if reproject:
-        if image.rio.crs is None:
-            print(f"Assigning CRS: EPSG:{reproject}")
-            image = image.rio.write_crs(f"EPSG:{reproject}")
-        elif image.rio.crs.to_epsg() != reproject:
-            print(f"Reprojecting to EPSG:{reproject}")
-            image = xr_reproject(image, how=f'EPSG:{reproject}')
-            print("Reprojection finished")
-            
-            # print(image.data_vars) - TODO - check where vars are being renamed to the invalid band names
-            # This tested to check if band names are kept, otherwise will appear as `reproject-hash`, but didn't work out
-            """image = image.assign_coords(band=bands_of_interest)"""
-        else:
-            print(f"Dataset already in EPSG:{reproject}")
-
-    # DEBUG
-    # force computation to see all chunks
-
-    image_out=image.rio.to_raster(
-        out_path,
-        driver=out_format,
-        compress="LZW",
-        dtype=target_dtype
-    )
-    
-    print("-" * 40)
-    return image_out
-
-def load_tile(
-    tiles_of_interest: str,
-    bbox: list | tuple,
-    bands: list,
-    datetime: str,
-    resolution: int,
-    chunks: dict | None = None,
-    resampling: str | None = "nearest",
-):
-    """
-    Load STAC items for a single tile as a Dask array if chunks are enabled (`dask.array.core.Array`)
-    
-    Parameters:
-    tiles_of_interest (str): name of the tile.
-    bbox (list or tuple): bounding box [minx, miny, maxx, maxy] for the tile
-    bands (list): list of bands of interest
-    datetime (str): time range in "YYYY-MM-DD/YYYY-MM-DD" format
-    resolution (int): target resolution
-    chunks (dict, optional): dictionary with chunk size for each dimension. None, if chunking not needed.
-    resampling(str, optional): type of resampling used (Default: "nearest")
-    
-    Returns:
-    dask.array.core.Array: loaded array for the tile
-    pystac.ItemCollection: STAC items
-
-    Notes:
-    - `crs=crs` in `odc.stac.stac_load` was used before which led to on-fly tile reprojection
-    and artefacts in chunked output compared to non-chunked one. This was omitted, so the loaded data keeps the original CRS.
-    - `bilinear` and `cubic` provide smoother resampling, but `nearest` has less artefacts when chunking 
-    and doesn't approximate the number of valid pixels (with float numbers).
-    - `odc.stac.stac_load` is not covered by the documentation yet (04/11/2025). Only the old version, `odc.stac.load`, 0.39.0 available.
-    To check the actual documentation use `help(odc.stac.stac_load)`.
-    
-
-    """
-    print("-" * 40)
-    print(f'Process for tile {tiles_of_interest} started.', flush=True)
-    print(f"Bbox of interest is: {bbox}")
-
-    catalog = STACClient.open(
-        api_url
-        )
-
-    search = catalog.search(
-        collections=collection,
-        bbox=bbox,
-        datetime=datetime
-    )
-    items = search.item_collection()
-    print(f"Number of items: {len(items)}")
-    print(f"Type of items: {type(items)}")
-    inspect_search(items, index=0)
-
-    data = odc.stac.stac_load(
-        items=items,
-        bands=bands,
-        bbox=bbox,
-        resolution=resolution,
-        chunks=chunks,
-        resampling=resampling
-    )
-    # TODO - to write clipping by grid tiles.
-    # TODO - check out `xr.rio.clip_by_box`
-
-    # DEBUG
-    print("Dataset has been loaded")
-    print(data)
-    print(data.dims)
-
-    return data, items
-
-def process_cloud (cloud_masked):
+def process_cloud(cloud_masked):
     """
     This function calculates the median cloud probability, counts valid pixels from the xarray dataset, and then export it to GeoTIFFs.
     
@@ -480,7 +287,7 @@ def dask_local_cluster(
     n_workers: int | None = None,
     threads_per_worker: int | None = None,
     memory_limit: str | None = None,
-    processes: bool = False,
+    processes: bool = True,
     dashboard_address: str = "0.0.0.0:8787"
 ):
     """
@@ -503,7 +310,7 @@ def dask_local_cluster(
     <Client: 'tcp://127.0.0.1:32973' processes=7 threads=14, memory=7.65 GiB>
     - Cluster is the Scheduler with linked Workers
     - It is possible to define custom dashboard address which would be accessible outside of the Docker container/Jupyter kernel
-    - It is unclear whether `processes` or `threads` are more suitable for this job: https://dask.discourse.group/t/understanding-how-dask-is-executing-processes-vs-threads/666/2
+    - `processes` are more suitable for this job than threads: https://dask.discourse.group/t/understanding-how-dask-is-executing-processes-vs-threads/666/2
     - Print statements wil declare parameters are None if they are not passed, but Dask internally uses automatic parameter values
     """
     cluster = LocalCluster(
@@ -538,7 +345,8 @@ def dask_local_cluster(
     return cluster,client
 
 #### MAIN PROCESS
-def cloud_prob_wrapper (export_scenes:bool=False, mosaic:bool=True, **cluster_kwargs):
+@delayed
+def cloud_prob_wrapper (tile, export_scenes:bool=False, export_tile:bool=False):
     """
     Main wrapper process entails the following steps either for a single tile, or for a tile series:
     - 0. set up Dask cluster
@@ -548,153 +356,184 @@ def cloud_prob_wrapper (export_scenes:bool=False, mosaic:bool=True, **cluster_kw
     - 3. calculate cloud probability and valid count
     - (optional) mosaic cloud probability, if multiple tiles
     - 4. export to geotiff
+
+    These manipulations are done lazily in a Dask-backed array without actual computation.
     
     Parameters:
+    tile (Any): name of tile, eg `NZ06`
     export_scenes (bool, default=False): whether exporting scenes is required or not for visual checks (recommended only for calculations with one tile and short time period). `False` if no export required
     mosaic (bool, default=True): whether tiles should be combined (mosaicked into one output). `True` if mosaic is required
-    **cluster_kwargs (dict): optional keyword arguments passed to `dask_local_cluster`, eg n_workers=7, threads_per_worker=2 
+    export_tile (bool, default=False): whether exporting each calculated output (per tile) into a separate GeoTIFF
 
     Notes:
-    - `mosaic=False` is not implemented yet. It is unclear if we need mosaic for larger areas and if it would be better to convert pixel values to parquet
     - `xr.merge (processed_tiles, compat="override")` didn't work - it's exporting the GeoTIFF with the merged extent, but overriding all pixels of other datasets (tiles) with NaN
     `xarray.combine_first` is used instead
     """
-    start_time = time.time()
-
-    # set up Dask
-    cluster, client = dask_local_cluster(**cluster_kwargs)
-
     # read tiles and define time range
-    tiles = gpd.read_file(tiles_path).to_crs(4326)
+    tiles = gpd.read_file(tiles_path)
     time_of_interest = f'{year}-01-01/{year}-12-31'
     # TODO - to rewrite to a function if we need seasons?
 
-    check_kernel_limit()
-
     # SINGLE TILE
-    if tiles_of_interest and len(tiles_of_interest) == 1:
-        print(f"Calculating cloud probability for a tile of interest {tiles_of_interest}...")
-        tile_name = tiles_of_interest[0]
+    if tile:
+        selected_tile = tiles[tiles["tile_name"] == tile]
 
-        selected_tile = tiles[tiles["tile_name"] == tile_name]
         bbox_of_interest = selected_tile.total_bounds.tolist()
+        print(f"Initial bbox is {bbox_of_interest})")
 
-        data, items = load_tile(
-            tiles_of_interest=tile_name,
-            bbox=bbox_of_interest,
-            bands=bands_of_interest,
-            datetime=time_of_interest,
-            resolution=res,
-            chunks=chunks_size,
-            resampling=resampling
+        data=load_tile(
+            tile_bbox=bbox_of_interest,
+            collection=CollectionEnum.ELEMENT84_SENTINEL_2,
+            out_bands=bands_of_interest,
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+            out_resolution=res,
+            out_crs=target_crs,
+            resample_type=ResampleEnum.NEAREST,
+            chunks=chunks_size
         )
-
+        
         try:
-            cloud_masked = mask_with_band(data)
+            cloud_masked = apply_scl_mask(
+                data=data,
+                origin_band="cloud",
+                scl_band="scl",
+                dtype_origin="float32", 
+                dtype_mask="int16",
+                mask_values=0,
+                fill_value=-1
+            )
+
             print(f"Cloud masked with SCL.")
         except Exception as e:
             print(f"Failed to mask cloud with SCL band")
 
-        # DEBUG: check each scene for test
-        if export_scenes:
-            export_s2_scenes(data, items, output_dir="data/test/unmasked_cloud", band="cloud")
-            export_s2_scenes(data, items, output_dir="data/test/unmasked_scl", band="scl")
-            export_s2_scenes(cloud_masked, items, output_dir="data/test/masked_cloud", band="cloud")
-
         cloud_out = process_cloud(cloud_masked)
+        cloud_out.attrs["tile_name"] = tile
+        print(f"Cloud out dimensions: {cloud_out.dims}") # DEBUG
+        
+        # NOTE: TODO - wrap into the separate @delayed function?
+        if export_tile:
+            out_path = f'data/{area_name}_{tile}_{year}.tif'
 
-        out_path = f'data/{area_name}_{tile_name}_{year}.tif'
-
-        print(f"Bands of interest are(2): {out_bands}")  # TODO - to fix the name of output bands - not defined
-        try:
-            out = to_geotif(
-                dataset=cloud_out,
-                bands_of_interest=out_bands,
-                reproject=target_crs,
-                out_path=out_path,
-                out_format=out_format
-            )
-            # TODO - move to Dask compute (@delayed) in one task
-            print(f"Output GeoTIFF saved to {out_path}")
-        except Exception as e:
-            print(f"Failed to save GeoTIFF: {e}")
-
-    # MULTIPLE TILES
-    else:
-        print(f"Calculating cloud probability for a tile series {tiles_of_interest}...")
-        processed_tiles = []
-
-        for tile_name in tiles_of_interest:
-            selected_tile = tiles[tiles["tile_name"] == tile_name]
-            bbox_of_interest = selected_tile.total_bounds.tolist()
-
-            data, items = load_tile(
-                tiles_of_interest=tile_name,
-                bbox=bbox_of_interest,
-                bands=bands_of_interest,
-                datetime=time_of_interest,
-                resolution=res,
-                chunks=chunks_size,
-                resampling=resampling
-            )
-
-            cloud_masked = mask_with_band(
-                data,
-                origin_band="cloud",
-                mask_band="scl",
-                dtype_origin="float32",
-                dtype_mask="int16",
-                mask_nodata=0,
-                fill_value=-1
-            )
-
-            cloud_out = process_cloud(cloud_masked)
-            print(f"Cloud out dimensions: {cloud_out.dims}") # DEBUG
-            cloud_out.attrs["tile_name"] = tile_name  # NOTE: write the tilename to the dataset attributes
-
-            processed_tiles.append(cloud_out)
-            print("-" * 40)
-
-        if mosaic:
-        # mosaic files together
-            first_tile = processed_tiles[0].attrs.get('tile_name')
-            mosaic = processed_tiles[0]
-            print(f"Starting mosaic with the first tile {first_tile}")
-            for tile in processed_tiles[1:]:
-                dataset_name = tile.attrs.get('tile_name')
-                print(f"Combining tiled dataset {dataset_name} into mosaic for the base...")
-                mosaic = tile.combine_first(mosaic)  # NOTE: this will combine the next tiles with the first one
-
-            # TODO - to consider rechunking for `mosaic` by `time` dimension
-            # NOTE: Dask will raise a warning for yearly mosaic:
-            # /opt/conda/lib/python3.12/site-packages/dask/array/core.py:4996: PerformanceWarning: Increasing number of chunks by factor of 16
-            # result = blockwise(
-
-            out_path = f'data/{area_name}_mosaic_{year}.tif'
-            print("Combining finished.")
-            # TODO: Task 1 (tiling/calculation with Dask), Task 2 (mosaic + conversion to LSOA, probably Spark)
+            print(f"Bands of interest are(1): {out_bands}")  # TODO - to fix the name of output bands - not defined
             try:
                 out = to_geotif(
-                    dataset=mosaic,
-                    bands_of_interest=out_bands,
-                    reproject=target_crs,
+                    dataset=cloud_out,
+                    out_bands=out_bands,
+                    out_crs=target_crs,
                     out_path=out_path,
-                    out_format=out_format
+                    out_dtype=DataTypeEnum.FLOAT32,
+                    out_format=OutputFormatEnum.COG
                 )
+
                 print(f"Output GeoTIFF saved to {out_path}")
             except Exception as e:
                 print(f"Failed to save GeoTIFF: {e}")
-            # NOTE: with lazy Dask, time spent on GeoTIFF exporting, especially mosaic
-        else:
-            raise NotImplementedError("Non-mosaicked output for multiple tiles is not implemented yet.")
+
+        check_dataset(cloud_out)
+        inspect_chunks(data)
+
+        return cloud_out
+
+# TODO - to develop this one
+@delayed
+def export_out_tile(dataset, out_path, bands, crs, out_format="COG"):
+    """Wrapper for exporting separate tiles if needed"""
+    return to_geotif(
+        dataset=dataset,
+        bands_of_interest=bands,
+        reproject=crs,
+        out_path=out_path,
+        out_format=out_format
+    )
+
+
+
+@delayed
+def mosaic_tiles(processed_tiles, area_name: str, year: int, out_bands, target_crs, out_format="GTiff"):
+    """
+    Creates a mosaic from multiple processed tile datasets (eg, annual cloud probability). 
+    Starts from the first tile and combines others with this one.
+
+    Parameters:
+    - processed_tiles (list of xarray.Dataset): list of tiles already processed
+    - area_name (str): area name for output file naming
+    - year (int): data year
+    - out_bands (list): bands to export
+    - target_crs (str): CRS for reprojection
+    - out_format (str, default="GTiff"): output format
+
+    Returns:
+    - xarray.Dataset: lazy Dask-backed dataset representing the mosaic
+    """
+    if not processed_tiles or len(processed_tiles) == 0:
+        raise ValueError("No processed tiles provided for mosaicking.")
+
+    if len(processed_tiles) == 1:
+        mosaic = processed_tiles[0]
+        tile_name = mosaic.attrs.get("tile_name", "unknown")
+        print(f"Only one tile provided ({tile_name}). Mosaic is not provided.")
+        return mosaic
+    else:
+        mosaic = processed_tiles[0]
+        first_tile_name = mosaic.attrs.get("tile_name", "unknown")
+        print(f"Starting mosaic with the first tile: {first_tile_name}")
+
+        for tile_ds in processed_tiles[1:]:
+            tile_name = tile_ds.attrs.get("tile_name", "unknown")
+            print(f"Combining tile {tile_name} into mosaic...")
+            mosaic = tile_ds.combine_first(mosaic)
+
+    # NOTE: consider rechunking to avoid too many small chunks
+    # mosaic = mosaic.chunk({"time": 20})  # TODO:- to find out if we need this
+
+    # export mosaic to GeoTIFF (lazy Dask will compute here)
+    out_path = f"data/{area_name}_mosaic_{year}.tif"
+    try:
+        out = to_geotif(
+            dataset=mosaic,
+            out_bands=out_bands,
+            out_crs=target_crs,
+            out_path=out_path,
+            out_dtype=DataTypeEnum.FLOAT32,
+            out_format=OutputFormatEnum.COG
+        )
+
+        print(f"Mosaic GeoTIFF saved to {out_path}")
+    except Exception as e:
+        print(f"Failed to save mosaic GeoTIFF: {e}")
+
+    return mosaic
+
+if __name__ == "__main__":
+    """
+    This will create number of tasks equal to the tile number and build the Dask graph
+    """
+    start_time = time.time()
+    check_kernel_limit()
+    
+    cluster, client = dask_local_cluster()
+
+    processed_tiles=[cloud_prob_wrapper(tile=tile,export_scenes=False, export_tile=True) for tile in tiles_of_interest]
+    
+    print(processed_tiles)
+    # TODO - to develop
+    """if cloud_prob_wrapper.export_tile:
+        tile_exports=export_out_tile(processed_tiles, out_path, out_bands, target_crs, out_format)
+        compute"""
+    
+    mosaic = mosaic_tiles(
+        processed_tiles=processed_tiles,
+        area_name=area_name,
+        year=year,
+        out_bands=out_bands,
+        target_crs=target_crs,
+        out_format=out_format
+    )
+    
+    compute(mosaic)
 
     finish_time = time.time()
     elapsed_time = finish_time - start_time
-    print(f"Elapsed time: {elapsed_time:.4f} seconds")
-
-    check_dataset(cloud_out)
-    inspect_chunks(data)
-
-if __name__ == "__main__":
-    tasks = [delayed(cloud_prob_wrapper)(export_scenes=False, mosaic=True)]
-    compute(*tasks)
+    print(f"Elapsed time: {elapsed_time:.2f} seconds")

@@ -25,6 +25,6 @@ out:
 
 # DASK CONFIG
 dask:
-    chunks_size: {'time': 40}
+    chunks_size: {'time':40}
 
     
