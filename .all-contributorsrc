@@ -39,6 +39,16 @@
       "contributions": [
         "review"
       ]
+    },
+    {
+      "login": "behzad89",
+      "name": "Behzad Valipour Sh.",
+      "avatar_url": "https://avatars.githubusercontent.com/u/47195556?v=4",
+      "profile": "https://behzad89.github.io/",
+      "contributions": [
+        "code",
+        "doc"
+      ]
     }
   ],
   "contributorsPerLine": 7,
