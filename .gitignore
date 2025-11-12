@@ -208,3 +208,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+.devcontainer/devcontainer.json
+data_raw/cloud_Newcastle_2024.tif
+data_raw/uk_datazones.gpkg/__MACOSX/._uk_datazones.gpkg
+data_raw/uk_datazones.gpkg/uk_datazones.gpkg
+data_raw/cloud_probability_flipped.tif
+demo/lsoa_cloud_stats_rasterstats.ipynb
