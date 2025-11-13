@@ -8,7 +8,7 @@ from imago_utils.utils.process import process_cloud
 import geopandas as gpd
 import yaml
 
-with open("config_test.yaml", "r") as f:
+with open("/home/u5da/bvsh15.u5da/codebook/config_template.yaml", "r") as f:
     config = yaml.safe_load(f)
 
 # extract sections
@@ -24,9 +24,9 @@ start_date = input_cfg["time"]["start_date"]
 end_date = input_cfg["time"]["end_date"]
 out_bands = input_cfg["bands_of_interest"]
 input_storage = input_cfg["input_storage"]
-output_filename = input_cfg["output_filename"]
 # output params
 output_storage = output_cfg["output_storage"]
+output_filename = output_cfg["output_filename"]
 out_crs = output_cfg["out_crs"]
 out_resolution = output_cfg["res"]
 out_dtype = output_cfg["out_dtype"]
@@ -40,7 +40,6 @@ threads_per_worker = dask_cfg["threads_per_worker"]
 memory_limit = dask_cfg["memory_limit"]
 dashboard_address = dask_cfg["dashboard_address"]
 
-@delayed
 def process_tiles(tile_bbox, tile_name):
     tile = load_tile(
         tile_bbox=tile_bbox,
@@ -76,7 +75,7 @@ def main():
     dash_url = cluster.dashboard_link
     scheduler_host = dash_url.split("//")[1].split(":")[0]
     print("\nto access the Dask dashboard, do:",flush=True)
-    print(f"ssh -L {dashboard_address.lstrip(':')}{scheduler_host}{dashboard_address} "
+    print(f"ssh -L {dashboard_address.lstrip(':')}:{scheduler_host}{dashboard_address} "
           f"<hpc_username>@<login_node>", flush=True)
     print(f"then open: http://localhost{dashboard_address}\n",flush=True)
 
@@ -85,6 +84,7 @@ def main():
         for _, row in tiles.bounds.iterrows()
     ]
 
+    
     bag = db.from_sequence(tile_list, npartitions=16) #Break tiles into 16 groups
     bag = bag.map(lambda x: process_tiles(x[0], x[1])) # Map the processing function to each tile
     results = bag.compute()

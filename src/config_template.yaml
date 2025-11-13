@@ -14,13 +14,13 @@ input:
 
 output:
   output_storage: "/home/u5da/bvsh15.u5da/storage/TemporaryData"
-  output_filename: cloudprob_uk_20240101-20250101 #[Dataset]_[Region]_[TimePeriod]_[TileID].tif
+  output_filename: "cloudprob_uk_2024" #[Dataset]_[Region]_[TimePeriod]_[TileID].tif
   out_crs: 27700
   res: 20
   out_dtype: "float32"
   resampling: "nearest"
   out_format: "GeoTIFF"
-  time_dim: "time"
+  time_dim: "year"
 
 dask:
   chunks: { "time": 20, "x": 250, "y": 250 }  # or None
