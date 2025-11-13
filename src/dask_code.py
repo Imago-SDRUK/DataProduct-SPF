@@ -1,4 +1,5 @@
 from dask.distributed import Client as DaskClient
+import dask.bag as db
 from dask.distributed import LocalCluster
 from dask import delayed, compute
 from imago_utils.io.downloader import load_tile, to_geotif
@@ -54,7 +55,6 @@ def process_tiles(tile_bbox, tile_name):
 
     masked_tile = apply_scl_mask(tile, origin_band="cloud")
     ds = process_cloud(masked_tile)
-    output_filename = 
     to_geotif(ds,
               out_format=out_format,
               out_dtype = out_dtype, 
@@ -80,11 +80,14 @@ def main():
           f"<hpc_username>@<login_node>", flush=True)
     print(f"then open: http://localhost{dashboard_address}\n",flush=True)
 
-    tasks = [
-        process_tiles([row.minx, row.miny, row.maxx, row.maxy], tiles.loc[row.name, "tile_name"])
+    tile_list = [
+        ([row.minx, row.miny, row.maxx, row.maxy], tiles.loc[row.name, "tile_name"])
         for _, row in tiles.bounds.iterrows()
     ]
-    results = compute(*tasks)
+
+    bag = db.from_sequence(tile_list, npartitions=16) #Break tiles into 16 groups
+    bag = bag.map(lambda x: process_tiles(x[0], x[1])) # Map the processing function to each tile
+    results = bag.compute()
     return results
 
 if __name__ == "__main__":
