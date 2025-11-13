@@ -1,0 +1,32 @@
+# Configuration template file. The intent is that we can avoid hard-coding
+# things within the Python files by parameterising them here, which will make
+# running multiple jobs easier.
+# Filepaths in this template are those used on Isambard.
+
+input:
+  tiles: "data/uk_20km_grid.gkpg"
+  api_url: "https://earth-search.aws.element84.com/v1"
+  collection: "sentunel-2-c1-l2a"
+  time:
+    year: 2024
+    start_date: "2024-01-01"
+    end_date: "2024-12-31"
+  bands_of_interest: [ "cloud", "scl" ]
+  input_storage: "/home/u5da/bvsh15.u5da/storage/TemporaryData"
+
+output:
+  output_storage: "/home/u5da/bvsh15.u5da/storage/TemporaryData"
+  output_filename: "output_data.tif"
+  target_crs: 27700
+  res: 20
+  target_dtype: "float32"
+  resampling: "nearest"
+  out_format: "GeoTIFF"
+  area_name: "Newcastle"
+
+dask:
+  chunks: { "time": 20, "x": 20, "y": 20 }  # or None
+  n_workers: 18
+  threads_per_worker: 4
+  memory_limit: "5GB"
+  dashboard_address: ":8787"
