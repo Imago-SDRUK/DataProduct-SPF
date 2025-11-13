@@ -2,15 +2,16 @@
 
 # INPUT - area of interest
 in_area: 
-    tiles_path: "data/uk_20km_grid.gpkg"
-    tiles_of_interest: ["NZ26","NZ24","NZ04","NZ06","NZ44","NZ46"]
-
+    tiles: "data/uk_20km_grid.gpkg"
+    
 # INPUT - satellite collections  
 in_stac:
     api_url: "https://earth-search.aws.element84.com/v1"
     collection: "sentinel-2-c1-l2a"
     time:
         year: 2024
+        start_date: '2024-01-01'
+        end_date: '2024-12-31'
     bands_of_interest: ["cloud", "scl"]
 
 # OUTPUT  
@@ -20,11 +21,11 @@ out:
     out_bands: ['cloud_prob', 'valid_count']
     target_dtype: "float32"
     resampling: "nearest"
-    out_format: "COG" 
+    out_format: "GeoTIFF" 
     area_name: "Newcastle"
 
 # DASK CONFIG
 dask:
-    chunks_size: {'time':40}
-
-    
+    #chunks_size: {'time':40}
+    chunks_size: {'time':20, 'x':250, 'y':250}
+    flush: True

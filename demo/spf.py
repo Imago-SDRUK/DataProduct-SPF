@@ -1,9 +1,9 @@
 #pip install odc-stac pystac-client dask
 
+### HPC config
 # NOTE: if `imago-utils` is mounted as an extra volume to your docker, use the following:
 import sys
-sys.path.append('/external_libs')
-# NOTE: then run `-pip install -e /external_libs`
+sys.path.append('/mnt/imago-utils/src')
 
 import numpy as np
 import pandas as pd
@@ -22,15 +22,23 @@ import dask.dataframe as dd
 import yaml
 import warnings
 import time
+import os
+import resource
+
+from typing import List, Optional, Dict, Union
 
 from dask.distributed import Client as DaskClient, LocalCluster
 from dask import delayed, compute
+import dask.bag as db
+from functools import partial
 #from dask_jobqueue import SLURMCluster
 
-#EXTERNAL
+#INTERNAL UTILS
 from imago_utils.io.downloader import load_tile, to_geotif
 from imago_utils.utils.mask import apply_scl_mask
 from imago_utils.utils.config import ResampleEnum, OutputFormatEnum, DataTypeEnum, CollectionEnum
+from imago_utils.utils.tile_inspection import inspect_search, export_scenes
+
 
 def get_cfg(config, path, default=None):
     """Access nested dict values using dot notation, warn if missing."""
@@ -43,18 +51,19 @@ def get_cfg(config, path, default=None):
             warnings.warn(f"=Missing key: '{path}' — using default={default!r}")
             return default
     return value
-# TODO - design suppression of warnings if multiple (as multiple processes use function)
 
 with open("config/config.yaml") as f:
     cfg = yaml.safe_load(f)
     
-    tiles_path=get_cfg(cfg,"in_area.tiles_path")
-    tiles_of_interest=get_cfg(cfg,"in_area.tiles_of_interest")
+    tiles=get_cfg(cfg,"in_area.tiles")
 
     api_url=get_cfg(cfg,"in_stac.api_url")
     collection=get_cfg(cfg,"in_stac.collection")
     year=get_cfg(cfg,"in_stac.time.year")
     season=get_cfg(cfg,"in_stac.time.season")
+    start_date=get_cfg(cfg,"in_stac.time.start_date")
+    end_date=get_cfg(cfg,"in_stac.time.end_date")
+
     bands_of_interest=get_cfg(cfg,"in_stac.bands_of_interest")
 
     area_name=get_cfg(cfg,"out.area_name")
@@ -66,73 +75,40 @@ with open("config/config.yaml") as f:
     out_format=get_cfg(cfg,"out.out_format")
 
     chunks_size=get_cfg(cfg,"dask.chunks_size")
+    flush=get_cfg(cfg,"dask.flush")
 
-def check_kernel_limit():
-    """This checks the local kernel limitations on memory.
-    Prints `-1` if inherited from OS and no restrictions."""
-    import resource
-
+def check_hpc_mem_limit(flush: bool = True):
+    """
+    Checks memory limits on HPC systems.
+    
+    Parameters:
+    flush (bool): Whether to flush print output immediately.
+    
+    Notes:
+    - checks kernel memory limits (soft/hard)
+    - checks slurm memory allocation if running under Slurm
+    """
+    # --- Kernel limits ---
     soft, hard = resource.getrlimit(resource.RLIMIT_AS)
-    print(f"Address space (virtual memory) soft/hard: {soft}/{hard}")
+    soft = -1 if soft == resource.RLIM_INFINITY else soft
+    hard = -1 if hard == resource.RLIM_INFINITY else hard
+    print(f"-" * 40, flush=flush)
+    print(f"[Kernel] Address space (virtual memory) soft/hard: {soft}/{hard}", flush=flush)
+
     soft, hard = resource.getrlimit(resource.RLIMIT_DATA)
-    print(f"Data segment size soft/hard: {soft}/{hard}")
+    soft = -1 if soft == resource.RLIM_INFINITY else soft
+    hard = -1 if hard == resource.RLIM_INFINITY else hard
+    print(f"[Kernel] Data segment size soft/hard: {soft}/{hard}", flush=flush)
 
-def inspect_search(items,index=0):
-    """Print inspect/debug info about the one of the assets (usually the first one).
-    Parameters:
-    items (pystac.ItemCollection): STAC collection
-    index (int=0): random tile number to inspect (Default: 0)
-    """
-    item = items[index]
-    try:
-        print("-" * 40)
-        print(f"Inspecting the asset #{index}")
-        print(f"DATETIME is {item.datetime}")
-        print(f"GEOMETRY is {item.geometry}")
-        print(f"PROPERTIES are:\n{item.properties}")
-        print(f"CRS: {item.properties.get('proj:code') or item.properties.get('proj:epsg')}")
-        '''metadata=odc.stac.extract_collection_metadata(item, cfg=None, md_plugin=None)
-        print(f"STAC metadata:\n{metadata}")'''
-        print("ASSETS are:")
-        assets = item.assets
-        print(assets.keys())
-        print(assets["thumbnail"].href)
-        print("-" * 40)
-    except Exception as e:
-        print("-" * 40)
-        print(f"Error checking item[{index}]: {e}")
-        print("-" * 40)
-
-def create_geobox(area, crs, resolution):
-    """Creates a geobox object from the initial bounding box, reprojected to the target CRS. 
-    The target CRS should be the same as the desired CRS of output GeoTIFF
-    
-    Parameters:
-    area (gpd.GeoDataFrame): geodataframe with the area of interest (tiles)
-    crs (int): target CRS
-    resolution (int): target resolution
-    Returns:
-    geobox (odc.geo.geobox.GeoBox): GeoBox object aligned with the area of interest
-
-    NOTES:
-    - deprecated as another solution to clip datasets found
-    """
-    from odc.geo.geobox import GeoBox
-    from shapely.ops import unary_union
-    from odc.geo.geom import Geometry
-
-    geom=area.geometry.iloc[0]
-    """#merged_geom = unary_union(area.geometry)
-    # polygon = merged_geom.convex_hull""" #not needed
-    
-    # wrap shapely geometry with CRS
-    geopolygon = Geometry(geom, crs)
-
-    # create geobox
-    geobox = GeoBox.from_geopolygon(geopolygon, resolution=resolution, tight=True)
-    print(geobox)
-
-    return geobox
+    # --- Slurm limits ---
+    if 'SLURM_JOB_ID' in os.environ:
+        mem_per_node = os.environ.get('SLURM_MEM_PER_NODE', 'unknown')
+        mem_per_cpu = os.environ.get('SLURM_MEM_PER_CPU', 'unknown')
+        print(f"[Slurm] Memory per node: {mem_per_node} MB", flush=flush)
+        print(f"[Slurm] Memory per CPU: {mem_per_cpu} MB", flush=flush)
+    else:
+        print("[Slurm] Not running under Slurm", flush=flush)
+    print(f"-" * 40, flush=flush)
 
 def process_cloud(cloud_masked):
     """
@@ -140,7 +116,6 @@ def process_cloud(cloud_masked):
     
     Parameters:
     dataset (xarray.Dataset): dataset with `cloud` and `scl` variables
-    out_path (str): path to the output GeoTIFFs.
     
     Returns:
     cloud_out (xarray.Dataset): output xarray dataset with calculated median probability and valid pixels
@@ -176,95 +151,61 @@ def process_cloud(cloud_masked):
     })
 
     # DEBUG
-    print(cloud_out)
-    print(cloud_out.dims)
-    print(cloud_out.rio.crs)
-    print(cloud_out.rio.bounds())
-    print("-" * 40)
+    print("-" * 40, flush=flush)
+    print("Output dataset specifications:", flush=flush)
+    print(cloud_out, flush=flush)
+    print(cloud_out.dims,flush=flush)
+    print(cloud_out.rio.crs, flush=flush)
+    print(cloud_out.rio.bounds(), flush=flush)
+    print("-" * 40, flush=flush)
 
     return cloud_out
 
-def export_s2_scenes(data, items, output_dir="data/test", band="cloud"):
-    """
-    Export Sentinel-2 scenes from an xarray Dataset or DataArray to individual GeoTIFFs.
-    Useful for visual checks within a short timeframe, eg January images.
-    Filenames are based on the STAC 's2:tile_id' property.
-
-    # USAGE (to export unmasked scenes)
-    # export_s2_scenes(data, items, output_dir="data/test/unmasked", band="cloud")
-    """
-    import os
-
-    os.makedirs(output_dir, exist_ok=True)
-    # extract tile IDs from STAC items
-    tile_ids = [item.properties.get("s2:tile_id", f"scene_{i}") for i, item in enumerate(items)]
-    # attach as the coordinate
-    if "tile_id" not in data.coords:
-        data = data.assign_coords(tile_id=("time", tile_ids))
-    # wrap in a dataset if it's dataarray
-    if isinstance(data, xr.DataArray):
-        print("Input is a DataArray — converting to Dataset for export.")
-        data = data.to_dataset(name=data.name or band)
-    # if band exists
-    if band not in data.data_vars:
-        raise ValueError(f"Band '{band}' not found in dataset. Available bands: {list(data.data_vars)}")
-        
-    # loop over scenes
-    for i, tile_id in enumerate(data.tile_id.values):
-        print(f"Processing scene {i+1}/{len(data.time)} → {tile_id}")
-
-        # select one scene and load into memory
-        scene = data.isel(time=i).compute()
-        out_path = os.path.join(output_dir, f"{band}_{tile_id}.tif")
-        # to check if crs is written
-        scene_band = scene[band]
-        scene_band = scene_band.rio.write_crs(scene_band.rio.crs or data[band].rio.crs, inplace=False)
-        
-        scene_band.rio.to_raster(out_path)
-        print(f"Exported: {out_path}")
-
-    print(f"\n All {len(data.time)} scenes exported to '{output_dir}'.")
-
 def check_dataset(obj):
     """General info about the output array or dataset"""
-    print(f"Type: {type(obj)}")
+    print(f"Type: {type(obj)}", flush=flush)
     
     if isinstance(obj, xr.DataArray):
-        print(f"Shape: {obj.shape}")
-        print(f"Dimensions: {obj.dims}")
-        print(f"Coordinates: {list(obj.coords)}")
-        print(f"Attributes: {obj.attrs}")
+        print(f"Shape: {obj.shape}", flush=flush)
+        print(f"Dimensions: {obj.dims}", flush=flush)
+        print(f"Coordinates: {list(obj.coords)}", flush=flush)
+        print(f"Attributes: {obj.attrs}", flush=flush)
     
     elif isinstance(obj, xr.Dataset):
-        print(f"Variables: {list(obj.data_vars)}")
-        print(f"Coordinates: {list(obj.coords)}")
-        print(f"Attributes: {obj.attrs}")
-        print(f"Dimensions: {obj.dims}")
+        print(f"Variables: {list(obj.data_vars)}", flush=flush)
+        print(f"Coordinates: {list(obj.coords)}", flush=flush)
+        print(f"Attributes: {obj.attrs}", flush=flush)
+        print(f"Dimensions: {obj.dims}", flush=flush)
 
-def inspect_chunks(obj):
+def inspect_chunks(obj, flush: bool = True):
     """
     Inspects Dask chunking for an xarray Dataset or DataArray.
     Prints total number of chunks, average size, and alignment info.
+    
+    Parameters:
+    obj: xarray.Dataset or xarray.DataArray
+    flush (bool): whether to flush print output immediately
     """
     # Handle Dataset (multiple variables)
     if isinstance(obj, xr.Dataset):
-        print(f"Dataset with {len(obj.data_vars)} variables:")
-        print("=" * 60)
+        print("=" * 60, flush=flush)
+        print(f"Dataset with {len(obj.data_vars)} variables:", flush=flush)
         for var_name, da in obj.data_vars.items():
-            print(f"\nVariable: {var_name}")
+            print(f"\nVariable: {var_name}", flush=flush)
             inspect_chunks(da)
         return
 
     da = obj #handle dataarray (single variable)
 
     if not hasattr(da.data, "chunks"):
-        print("Array not chunked (not a Dask array).")
+        print("Array not chunked (not a Dask array).", flush=flush)
+        print("=" * 60, flush=flush)
         return
 
     chunks = da.data.chunks
     dtype_size = da.dtype.itemsize
 
-    print("-" * 60)
+    print("-" * 60, flush=flush)
     total_chunks = 1
     uneven = False
 
@@ -273,23 +214,22 @@ def inspect_chunks(obj):
         equal = len(set(sizes)) == 1
         if not equal:
             uneven = True
-        print(f"{dim:>6}: {len(sizes)} chunks | sizes = {sizes[:5]}{'...' if len(sizes) > 5 else ''}")
+        print(f"{dim:>6}: {len(sizes)} chunks | sizes = {sizes[:5]}{'...' if len(sizes) > 5 else ''}", flush=flush)
 
     avg_chunk_elems = np.prod([np.mean(s) for s in chunks])
     avg_chunk_bytes = avg_chunk_elems * dtype_size
     avg_chunk_mb = avg_chunk_bytes / 1e6
 
-    print("-" * 60)
-    print(f"Total chunks: {total_chunks}")
-    print(f"Average chunk size: {avg_chunk_mb:.2f} MB ({da.dtype})")
-    print(f"Chunks evenly sized? {'Yes' if not uneven else 'No, uneven chunks'}")
+    print("-" * 60, flush=flush)
+    print(f"Total chunks: {total_chunks}", flush=flush)
+    print(f"Average chunk size: {avg_chunk_mb:.2f} MB ({da.dtype})", flush=flush)
+    print(f"Chunks evenly sized? {'Yes' if not uneven else 'No, uneven chunks'}", flush=flush)
 
 def dask_local_cluster(
-    n_workers: int | None = None,
-    threads_per_worker: int | None = None,
-    memory_limit: str | None = None,
-    processes: bool = True,
-    dashboard_address: str = "0.0.0.0:8787"
+    n_workers: int | None = 18,
+    threads_per_worker: int | None = 4,
+    memory_limit: str | None = "5GB",
+    dashboard_address: str = ":8787"
 ):
     """
     This function utilises the local Dask cluster (not suitable for HPC)
@@ -298,7 +238,6 @@ def dask_local_cluster(
     n_workers (int): number of workers to start in the cluster.
     threads_per_worker (int): number of threads per worker process
     memory_limit (str): memory limit per worker, eg "4GB"
-    processes (bool): whether to use separate processes (`True`) or threads (`False`) per worker
     dashboard_address (str, optional, default "0.0.0.0:8787"): Aadress and port for the Dask dashboard. Binding to `0.0.0.0` allows access from outside a Docker container or remote Jupyter kernel
 
     Notes:
@@ -311,43 +250,44 @@ def dask_local_cluster(
     <Client: 'tcp://127.0.0.1:32973' processes=7 threads=14, memory=7.65 GiB>
     - Cluster is the Scheduler with linked Workers
     - It is possible to define custom dashboard address which would be accessible outside of the Docker container/Jupyter kernel
-    - `processes` are more suitable for this job than threads: https://dask.discourse.group/t/understanding-how-dask-is-executing-processes-vs-threads/666/2
+    - `creating more workers` are more suitable for this job than threads: https://dask.discourse.group/t/understanding-how-dask-is-executing-processes-vs-threads/666/2
     - Print statements wil declare parameters are None if they are not passed, but Dask internally uses automatic parameter values
     """
     cluster = LocalCluster(
         n_workers=n_workers,
         threads_per_worker=threads_per_worker,
         memory_limit=memory_limit,
-        processes=processes,
         dashboard_address=dashboard_address
     )
     client = DaskClient(cluster)
 
     # DEBUG + dashboard
-    print("DASK CLUSTER")
-    print(f"Scheduler: {cluster.scheduler_address}")
-    print(f"Number of workers: {len(cluster.workers)}")
-    print(f"Total threads: {sum(w.nthreads for w in cluster.workers.values())}")
+    print("-" * 40, flush=flush)
+    print("DASK CLUSTER", flush=flush)
+    print(f"Scheduler: {cluster.scheduler_address}", flush=flush)
+    print(f"Number of workers: {len(cluster.workers)}", flush=flush)
+    print(f"Total threads: {sum(w.nthreads for w in cluster.workers.values())}", flush=flush)
     total_memory_bytes = sum(
         w.memory_limit for w in cluster.workers.values() if w.memory_limit is not None
     )   
-    print(f"Total memory: {total_memory_bytes / 1e9:.2f} GiB")
+    print(f"Total memory: {total_memory_bytes / 1e9:.2f} GiB", flush=flush)
 
-    print("Workers:")
+    print("Workers:", flush=flush)
     for i, (addr, worker) in enumerate(cluster.workers.items()):
         mem_str = f"{worker.memory_limit / 1e9:.2f} GiB" if worker.memory_limit else "unlimited"
-        print(f"Worker {i}: Address={addr}, Threads={worker.nthreads}, Memory={mem_str}")
+        print(f"Worker {i}: Address={addr}, Threads={worker.nthreads}, Memory={mem_str}", flush=flush)
 
-    print("Client:")
-    print(client)
-    print(f"Dashboard: {client.dashboard_link}")
-    print("-" * 40)
+    print(f"Client: {client}", flush=flush)
+    print(f"Dashboard: {client.dashboard_link}", flush=flush)
+    print("-" * 40, flush=flush)
 
     return cluster,client
 
 #### MAIN PROCESS
 @delayed
-def cloud_prob_wrapper (tile, export_scenes:bool=False, export_tile:bool=False):
+def cloud_tile_wrapper(idx, tile_name, tile_bbox, out_path: Optional[str], export_tile=True, inspect=False,
+                       out_format: OutputFormatEnum = OutputFormatEnum.GTIFF,
+                       out_bands: Optional[List[str]] = None):
     """
     Main wrapper process entails the following steps either for a single tile, or for a tile series:
     - 0. set up Dask cluster
@@ -361,98 +301,85 @@ def cloud_prob_wrapper (tile, export_scenes:bool=False, export_tile:bool=False):
     These manipulations are done lazily in a Dask-backed array without actual computation.
     
     Parameters:
-    tile (Any): name of tile, eg `NZ06`
-    export_scenes (bool, default=False): whether exporting scenes is required or not for visual checks (recommended only for calculations with one tile and short time period). `False` if no export required
-    mosaic (bool, default=True): whether tiles should be combined (mosaicked into one output). `True` if mosaic is required
+    idx (int): Index of the tile in the tiles list or GeoDataFrame.
+    tile_name (str): Unique name/identifier for the tile.
+    tile_bbox (list or tuple of float): Bounding box of the tile in [minx, miny, maxx, maxy] format.
+    out_path (str): output path
     export_tile (bool, default=False): whether exporting each calculated output (per tile) into a separate GeoTIFF
+    inspect (bool, default=True): whether inspecting the first item from the STAC collection
+    out_format (OutputFormatEnum, default=OutputFormatEnum.GTIFF): output file format, according to the internal config
+    out_bands (Optional[List[str]]): names of output bands
+
+    Returns
+    tile_out (xarray.Dataset): processed dataset
 
     Notes:
     - `xr.merge (processed_tiles, compat="override")` didn't work - it's exporting the GeoTIFF with the merged extent, but overriding all pixels of other datasets (tiles) with NaN
     `xarray.combine_first` is used instead
+    - Avoid creatig directories in the Python code on HPC, try to run jobs instead at the level aboves
     """
-    # read tiles and define time range
-    tiles = gpd.read_file(tiles_path)
-    time_of_interest = f'{year}-01-01/{year}-12-31'
-    # TODO - to rewrite to a function if we need seasons?
 
-    # SINGLE TILE
-    if tile:
-        selected_tile = tiles[tiles["tile_name"] == tile]
+    row = tiles_gdf.loc[idx] 
+    tile_bbox = list(row.geometry.bounds)
 
-        bbox_of_interest = selected_tile.total_bounds.tolist()
-        print(f"Initial bbox is {bbox_of_interest})")
-
-        data=load_tile(
-            tile_bbox=bbox_of_interest,
-            collection=CollectionEnum.ELEMENT84_SENTINEL_2,
-            out_bands=bands_of_interest,
-            start_date="2024-01-01",
-            end_date="2024-12-31",
-            out_resolution=res,
-            out_crs=target_crs,
-            resample_type=ResampleEnum.NEAREST,
-            chunks=chunks_size
-        )
-        
-        try:
-            cloud_masked = apply_scl_mask(
-                data=data,
-                origin_band="cloud",
-                scl_band="scl",
-                dtype_origin="float32", 
-                dtype_mask="int16",
-                mask_values=0,
-                fill_value=-1
-            )
-
-            print(f"Cloud masked with SCL.")
-        except Exception as e:
-            print(f"Failed to mask cloud with SCL band")
-
-        cloud_out = process_cloud(cloud_masked)
-        cloud_out.attrs["tile_name"] = tile
-        print(f"Cloud out dimensions: {cloud_out.dims}") # DEBUG
-        
-        # NOTE: TODO - wrap into the separate @delayed function?
-        if export_tile:
-            out_path = f'data/{area_name}_{tile}_{year}.tif'
-
-            print(f"Bands of interest are(1): {out_bands}")  # TODO - to fix the name of output bands - not defined
-            try:
-                out = to_geotif(
-                    dataset=cloud_out,
-                    out_bands=out_bands,
-                    out_crs=target_crs,
-                    out_path=out_path,
-                    out_dtype=DataTypeEnum.FLOAT32,
-                    out_format=OutputFormatEnum.COG
-                )
-
-                print(f"Output GeoTIFF saved to {out_path}")
-            except Exception as e:
-                print(f"Failed to save GeoTIFF: {e}")
-
-        check_dataset(cloud_out)
-        inspect_chunks(data)
-
-        return cloud_out
-
-# TODO - to develop this one
-@delayed
-def export_out_tile(dataset, out_path, bands, crs, out_format="COG"):
-    """Wrapper for exporting separate tiles if needed"""
-    return to_geotif(
-        dataset=dataset,
-        bands_of_interest=bands,
-        reproject=crs,
-        out_path=out_path,
-        out_format=out_format
+    data,items=load_tile(
+        tile_bbox=tile_bbox,
+        collection=collection,
+        out_bands=bands_of_interest,
+        start_date=start_date,
+        end_date=end_date,
+        out_resolution=res,
+        out_crs=target_crs,
+        chunks=chunks_size
     )
 
+    inspect_search(items, index=0, flush=flush) if inspect else None
+        
+    try:
+        cloud_masked = apply_scl_mask(
+            data=data,
+            origin_band="cloud",
+            scl_band="scl",
+            dtype_origin="float32", 
+            dtype_mask="int16",
+            mask_values=0,
+            fill_value=-1
+        )
 
+        print(f"Cloud masked with SCL.", flush=flush)
+    except Exception as e:
+        print(f"Failed to mask cloud with SCL band", flush=flush)
+
+    tile_out = process_cloud(cloud_masked)
+
+    tile_name = tiles_gdf.loc[idx, "tile_name"]
+    tile_out.attrs["tile_name"] = tile_name
+    print(f"Tile name: {tile_name}", flush=flush)
+    print(f"Cloud out dimensions: {tile_out.dims}", flush=flush)
+        
+    if export_tile:
+
+        try:
+            out = to_geotif(
+                dataset=tile_out,
+                out_bands=out_bands,
+                out_crs=target_crs,
+                out_path=out_path,
+                out_dtype=DataTypeEnum.FLOAT32, # TODO - to get from config 
+                out_format=out_format
+            )
+            
+            print(f"Output saved to {out_path}", flush=flush)
+        except Exception as e:
+            print(f"Failed to save: {e}", flush=flush)
+
+    check_dataset(tile_out)
+    inspect_chunks(data)
+
+    return tile_out
 
 @delayed
-def mosaic_tiles(processed_tiles, area_name: str, year: int, out_bands, target_crs, out_format="GTiff"):
+def mosaic_tiles(processed_tiles, area_name: str, year: int, target_crs, out_format: OutputFormatEnum = OutputFormatEnum.GTIFF, out_bands: Optional[List[str]] = None):
     """
     Creates a mosaic from multiple processed tile datasets (eg, annual cloud probability). 
     Starts from the first tile and combines others with this one.
@@ -461,9 +388,9 @@ def mosaic_tiles(processed_tiles, area_name: str, year: int, out_bands, target_c
     - processed_tiles (list of xarray.Dataset): list of tiles already processed
     - area_name (str): area name for output file naming
     - year (int): data year
-    - out_bands (list): bands to export
     - target_crs (str): CRS for reprojection
-    - out_format (str, default="GTiff"): output format
+    - out_format (OutputFormatEnum = OutputFormatEnum.GTIFF): output format, eg GeoTIFF or COG
+    - out_bands (Optional[List[str]]): bands of export
 
     Returns:
     - xarray.Dataset: lazy Dask-backed dataset representing the mosaic
@@ -474,20 +401,17 @@ def mosaic_tiles(processed_tiles, area_name: str, year: int, out_bands, target_c
     if len(processed_tiles) == 1:
         mosaic = processed_tiles[0]
         tile_name = mosaic.attrs.get("tile_name", "unknown")
-        print(f"Only one tile provided ({tile_name}). Mosaic is not provided.")
+        print(f"Only one tile provided ({tile_name}). Mosaic is not provided.", flush=flush)
         return mosaic
     else:
         mosaic = processed_tiles[0]
         first_tile_name = mosaic.attrs.get("tile_name", "unknown")
-        print(f"Starting mosaic with the first tile: {first_tile_name}")
+        print(f"Starting mosaic with the first tile: {first_tile_name}", flush=flush)
 
         for tile_ds in processed_tiles[1:]:
             tile_name = tile_ds.attrs.get("tile_name", "unknown")
-            print(f"Combining tile {tile_name} into mosaic...")
+            print(f"Combining tile {tile_name} into mosaic...", flush=flush)
             mosaic = tile_ds.combine_first(mosaic)
-
-    # NOTE: consider rechunking to avoid too many small chunks
-    # mosaic = mosaic.chunk({"time": 20})  # TODO:- to find out if we need this
 
     # export mosaic to GeoTIFF (lazy Dask will compute here)
     out_path = f"data/{area_name}_mosaic_{year}.tif"
@@ -497,44 +421,53 @@ def mosaic_tiles(processed_tiles, area_name: str, year: int, out_bands, target_c
             out_bands=out_bands,
             out_crs=target_crs,
             out_path=out_path,
-            out_dtype=DataTypeEnum.FLOAT32,
-            out_format=OutputFormatEnum.COG
+            out_dtype=DataTypeEnum.FLOAT32,  # TODO - to get from CONFIOG
+            out_format=out_format  # TODO - to get from CONFIOG
         )
 
-        print(f"Mosaic GeoTIFF saved to {out_path}")
+        print(f"Mosaic saved to {out_path}", flush=flush)
     except Exception as e:
-        print(f"Failed to save mosaic GeoTIFF: {e}")
+        print(f"Failed to save mosaic: {e}", flush=flush)
 
     return mosaic
 
 if __name__ == "__main__":
     """
-    This will create number of tasks equal to the tile number and build the Dask graph
+    This will create number of tasks equal to the tile number and build the Dask graph.
+    Mosaic is not included.
     """
-    start_time = time.time()
-    check_kernel_limit()
+    
+    check_hpc_mem_limit()
     
     cluster, client = dask_local_cluster()
 
-    processed_tiles=[cloud_prob_wrapper(tile=tile,export_scenes=False, export_tile=True) for tile in tiles_of_interest]
-    
-    print(processed_tiles)
-    # TODO - to develop
-    """if cloud_prob_wrapper.export_tile:
-        tile_exports=export_out_tile(processed_tiles, out_path, out_bands, target_crs, out_format)
-        compute"""
-    
-    mosaic = mosaic_tiles(
-        processed_tiles=processed_tiles,
-        area_name=area_name,
-        year=year,
-        out_bands=out_bands,
-        target_crs=target_crs,
-        out_format=out_format
-    )
-    
-    compute(mosaic)
+    # open tiles and compute indices
+    tiles_gdf = gpd.read_file(tiles)
+    indices = list(range(len(tiles_gdf)))
 
+    tile_names = tiles_gdf["tile_name"].tolist()  # list of tile names in the same order as indices
+    tile_bboxes = [list(geom.bounds) for geom in tiles_gdf.geometry]
+    out_paths = [f"data/output/{name}.tif" for name in tile_names]
+
+    # list comprehension - build tasks
+    tasks = [
+        cloud_tile_wrapper(
+            idx,
+            tile_name=tile_names[idx],
+            tile_bbox=tile_bboxes[idx],
+            out_path=out_paths[idx],
+            export_tile=True,
+            inspect=False,
+            out_format=OutputFormatEnum.GTIFF,
+            out_bands=out_bands
+        )
+        for idx in indices
+    ]
+
+    # actual computation
+    start_time = time.time()
+    results = compute(*tasks)
     finish_time = time.time()
     elapsed_time = finish_time - start_time
-    print(f"Elapsed time: {elapsed_time:.2f} seconds")
+    print(f"Elapsed time: {elapsed_time:.2f} seconds", flush=flush)
+    
