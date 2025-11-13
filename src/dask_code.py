@@ -23,13 +23,15 @@ start_date = input_cfg["time"]["start_date"]
 end_date = input_cfg["time"]["end_date"]
 out_bands = input_cfg["bands_of_interest"]
 input_storage = input_cfg["input_storage"]
+output_filename = input_cfg["output_filename"]
 # output params
 output_storage = output_cfg["output_storage"]
-target_crs = output_cfg["target_crs"]
+out_crs = output_cfg["out_crs"]
 out_resolution = output_cfg["res"]
-target_dtype = output_cfg["target_dtype"]
+out_dtype = output_cfg["out_dtype"]
 resampling = output_cfg["resampling"]
 out_format = output_cfg["out_format"]
+time_dim = output_cfg["time_dim"]
 # dask/optimisation paramsprocess.py
 chunks = dask_cfg["chunks"]
 n_workers = dask_cfg["n_workers"]
@@ -46,14 +48,19 @@ def process_tiles(tile_bbox, tile_name):
         start_date=start_date,
         end_date=end_date,
         out_resolution=out_resolution,
-        out_crs=target_crs,
+        out_crs=out_crs,
         chunks=chunks,
     )
 
     masked_tile = apply_scl_mask(tile, origin_band="cloud")
     ds = process_cloud(masked_tile)
     output_filename = 
-    to_geotif(ds, out_path=f"{output_storage}/{output_filename}", out_bands=list(ds.data_vars))
+    to_geotif(ds,
+              out_format=out_format,
+              out_dtype = out_dtype, 
+              out_path=f"{output_storage}/{output_filename}_{tile_name}.tif", 
+              out_bands=list(ds.data_vars),
+              time_dim = time_dim)
 
 def main():
     """Main function that generates the cluster and performs the computation"""
