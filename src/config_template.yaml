@@ -19,11 +19,12 @@ output:
   res: 20
   out_dtype: "float32"
   resampling: "nearest"
-  out_format: "GeoTIFF"
+  out_format: "GTiff"
   time_dim: "year"
 
 dask:
   chunks: { "time": 20, "x": 250, "y": 250 }  # or None
+  npartitions: 16 #Break tiles into 16 groups
   n_workers: 18
   threads_per_worker: 4
   memory_limit: "5GB"
