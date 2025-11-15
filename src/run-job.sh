@@ -30,6 +30,6 @@ apptainer exec \
       --cleanenv \
       --bind /nobackup/projects/bdncl34/storage:/storage \
        /users/bvsh15/geo-miniconda3_latest.sif \
-       python /users/bvsh15/codebook/dask_code.py --config_path /users/bvsh15/codebook/config.yaml
+       python dask_code.py --config_path config.yaml
 
 
