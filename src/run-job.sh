@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --mem=500GB                     # Total memory
 #SBATCH --time=0-04:30:00                 # Time limit hrs:min:sec (change as needed)
-##SBATCH --mail-user=behzad.valipour-shokouhi@newcastle.ac.uk # Where to send email notifications
+##SBATCH --mail-user=<email@newcastle.ac.uk> # Where to send email notifications
 #SBATCH --mail-type=ALL                 # When to send email notifications
 #SBATCH --partition=gh
 #SBATCH --account=bdncl34
