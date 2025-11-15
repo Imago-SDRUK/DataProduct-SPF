@@ -1,10 +1,9 @@
 from dask.distributed import Client as DaskClient
 import dask.bag as db
 from dask.distributed import LocalCluster
-from dask import delayed, compute
-from imago_utils.io.downloader import load_tile, to_geotif
-from imago_utils.utils.mask import apply_scl_mask
-from imago_utils.utils.process import process_cloud
+from imago.io.downloader import load_tile, to_geotif
+from imago.utils.mask import apply_scl_mask
+from imago.spf.process import process_cloud
 import geopandas as gpd
 import yaml, argparse
 
@@ -89,6 +88,7 @@ def main():
     tiles = gpd.read_file(f"{input_storage}/{tiles_file}")
 
     #TODO: use dask-jobqueue instead of local cluster
+    # Bede HPC is not possible
     cluster = LocalCluster(
         n_workers=n_workers,
         threads_per_worker=threads_per_worker,
