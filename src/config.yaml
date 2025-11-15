@@ -10,22 +10,22 @@ input:
     start_date: "2024-01-01"
     end_date: "2024-12-31"
   bands_of_interest: [ "cloud", "scl" ]
-  input_storage: "/home/u5da/bvsh15.u5da/storage/TemporaryData"
+  input_storage: "/storage/DataLake"
 
 output:
-  output_storage: "/home/u5da/bvsh15.u5da/storage/TemporaryData"
+  output_storage: "/storage/TemporaryData/random_tiles"
   output_filename: "cloudprob_uk_2024" #[Dataset]_[Region]_[TimePeriod]_[TileID].tif
   out_crs: 27700
   res: 20
   out_dtype: "float32"
   resampling: "nearest"
-  out_format: "GTiff"
+  out_format: "COG"
   time_dim: "year"
 
 dask:
   chunks: { "time": 20, "x": 250, "y": 250 }  # or None
   npartitions: 16 #Break tiles into 16 groups
-  n_workers: 18
-  threads_per_worker: 4
-  memory_limit: "5GB"
+  n_workers: 12
+  threads_per_worker: 6
+  memory_limit: "40GB"
   dashboard_address: ":8787"
