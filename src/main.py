@@ -1,11 +1,13 @@
 from dask.distributed import Client as DaskClient
 import dask.bag as db
 from dask.distributed import LocalCluster
+from dask_jobqueue import SLURMCluster
+from dask import delayed, compute
 from imago.io.downloader import load_tile, to_geotif
 from imago.utils.mask import apply_scl_mask
 from imago.spf.process import process_cloud
 import geopandas as gpd
-import yaml, argparse
+import yaml, argparse, time
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -58,6 +60,7 @@ def main():
     global input_storage, output_storage, output_filename, out_crs
     global out_resolution, out_dtype, resampling, out_format, time_dim
     global chunks, npartitions, n_workers, threads_per_worker, memory_limit, dashboard_address
+    global local_cluster, core
 
     # for each section, go through and get the variables of interest
     # input params
@@ -83,29 +86,52 @@ def main():
     threads_per_worker = dask_cfg["threads_per_worker"]
     memory_limit = dask_cfg["memory_limit"]
     dashboard_address = dask_cfg["dashboard_address"]
-
+    local_cluster = dask_cfg["local_cluster"]
+    core = dask_cfg["core"]
     """Main function that generates the cluster and performs the computation"""
     tiles = gpd.read_file(f"{input_storage}/{tiles_file}")
 
-    #TODO: use dask-jobqueue instead of local cluster
-    # Bede HPC is not possible
-    cluster = LocalCluster(
-        n_workers=n_workers,
-        threads_per_worker=threads_per_worker,
-        memory_limit=memory_limit,
-        dashboard_address=dashboard_address,
-    )
-    dask_client = DaskClient(cluster)
+    if local_cluster:
 
-    tile_list = [
-        ([row.minx, row.miny, row.maxx, row.maxy], tiles.loc[row.name, "tile_name"])
+        cluster = LocalCluster(
+            n_workers=n_workers,
+            threads_per_worker=threads_per_worker,
+            memory_limit=memory_limit,
+            dashboard_address=8787,
+        )
+        client = DaskClient(cluster)
+    else:
+        # TODO: adjust SLURMCluster parameters as needed based on your HPC environment
+        cluster = SLURMCluster(
+            cores=core,
+            processes=threads_per_worker,
+            memory=memory_limit,
+            shebang="#!/usr/bin/env bash",
+            walltime="12:00:00",
+            local_directory="/tmp",
+            log_directory="/tmp",
+            death_timeout="30s",
+            job_extra_directives=[ 
+                "--gres=gpu:0" 
+                ]
+        )
+
+        client = DaskClient(cluster)
+        cluster.scale(jobs=n_workers)
+
+    while len(cluster.scheduler.workers) < 5: # wait for at least 5 workers to be ready
+        time.sleep(1)
+
+
+    tasks= [
+        process_tiles([row.minx, row.miny, row.maxx, row.maxy], tiles.loc[row.name, "tile_name"])
         for _, row in tiles.bounds.iterrows()
     ]
+    # Break tasks into chunks
+    for i in range(0, len(tasks), npartitions):
+        chunk = tasks[i : i + npartitions]
+        results = compute(*chunk)
 
-    
-    bag = db.from_sequence(tile_list, npartitions=npartitions)
-    bag = bag.map(lambda x: process_tiles(x[0], x[1])) # Map the processing function to each tile
-    results = bag.compute()
     return results
 
 if __name__ == "__main__":

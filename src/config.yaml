@@ -19,13 +19,14 @@ output:
   res: 20
   out_dtype: "float32"
   resampling: "nearest"
-  out_format: "COG"
+  out_format: "GTiff"
   time_dim: "year"
 
 dask:
   chunks: { "time": 20, "x": 250, "y": 250 }  # or None
-  npartitions: 16 #Break tiles into 16 groups
-  n_workers: 12
-  threads_per_worker: 6
-  memory_limit: "40GB"
-  dashboard_address: ":8787"
+  npartitions: 35 # Break tiles into 16 partitions
+  n_workers: 30
+  threads_per_worker: 1
+  memory: "35GB"
+  local_cluster: True  # If true, use LocalCluster; if false, use SLURMCluster
+  core: 72  # Only used if local_cluster is false
