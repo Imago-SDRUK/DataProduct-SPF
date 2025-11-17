@@ -1,8 +1,7 @@
 from dask.distributed import Client as DaskClient
-import dask.bag as db
 from dask.distributed import LocalCluster
 from dask_jobqueue import SLURMCluster
-from dask import delayed, compute
+from dask import compute
 from imago.io.downloader import load_tile, to_geotif
 from imago.utils.mask import apply_scl_mask
 from imago.spf.process import process_cloud
@@ -45,6 +44,8 @@ def process_tiles(tile_bbox, tile_name):
               time_dim = time_dim)
 
 def main():
+    """Main function that generates the cluster and performs the computation"""
+
     args = parse_args()
 
     with open(args.config_path, "r") as f:
@@ -79,7 +80,7 @@ def main():
     resampling = output_cfg["resampling"]
     out_format = output_cfg["out_format"]
     time_dim = output_cfg["time_dim"]
-    # dask/optimisation paramsprocess.py
+    # dask/optimisation params
     chunks = dask_cfg["chunks"]
     npartitions = dask_cfg["npartitions"]
     n_workers = dask_cfg["n_workers"]
@@ -87,33 +88,31 @@ def main():
     memory_limit = dask_cfg["memory_limit"]
     dashboard_address = dask_cfg["dashboard_address"]
     local_cluster = dask_cfg["local_cluster"]
-    core = dask_cfg["core"]
-    """Main function that generates the cluster and performs the computation"""
+    cores = dask_cfg["cores"]
+    worker_walltime = dask_cfg["worker_walltime"]
+    job_extra_directives = dask_cfg["job_extra_directives"]
+
     tiles = gpd.read_file(f"{input_storage}/{tiles_file}")
 
     if local_cluster:
-
         cluster = LocalCluster(
             n_workers=n_workers,
             threads_per_worker=threads_per_worker,
             memory_limit=memory_limit,
-            dashboard_address=8787,
+            dashboard_address=dashboard_address,
         )
         client = DaskClient(cluster)
     else:
-        # TODO: adjust SLURMCluster parameters as needed based on your HPC environment
         cluster = SLURMCluster(
-            cores=core,
+            cores=cores,
             processes=threads_per_worker,
             memory=memory_limit,
             shebang="#!/usr/bin/env bash",
-            walltime="12:00:00",
+            walltime=worker_walltime,
             local_directory="/tmp",
             log_directory="/tmp",
             death_timeout="30s",
-            job_extra_directives=[ 
-                "--gres=gpu:0" 
-                ]
+            job_extra_directives=job_extra_directives,
         )
 
         client = DaskClient(cluster)

@@ -4,7 +4,7 @@
 # Filepaths in this template are those used on Isambard.
 
 input:
-  tiles: "data/uk_20km_grid.gkpg"
+  tiles: "data/uk_20km_grid.gpkg"
   collection: "element84-s2"
   time:
     start_date: "2024-01-01"
@@ -24,9 +24,14 @@ output:
 
 dask:
   chunks: { "time": 20, "x": 250, "y": 250 }  # or None
-  npartitions: 35 # Break tiles into 16 partitions
+  npartitions: 35 # Split up tiles into n chunks
   n_workers: 30
   threads_per_worker: 1
-  memory: "35GB"
+  memory_limit: "35GB"
   local_cluster: True  # If true, use LocalCluster; if false, use SLURMCluster
-  core: 72  # Only used if local_cluster is false
+  cores: 72  # Only used if local_cluster is false
+  dashboard_address: 8787
+  worker_walltime: "12:00:00"
+  job_extra_directives: [
+                "--gres=gpu:0"
+                ]

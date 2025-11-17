@@ -33,7 +33,7 @@ echo ""
 #       --cleanenv \
 #       --bind /nobackup/projects/bdncl34/storage:/storage \
 #        /users/bvsh15/geo-miniconda3_latest.sif \
-#        python main.py --config_path config.yaml
+#        python main.py --config_path config_template.yaml
 
 # Run your Python script directly (if not using Singularity) 
 python main.py --config_path config.yaml
