@@ -214,3 +214,27 @@ data_raw/uk_datazones.gpkg/__MACOSX/._uk_datazones.gpkg
 data_raw/uk_datazones.gpkg/uk_datazones.gpkg
 data_raw/cloud_probability_flipped.tif
 demo/lsoa_cloud_stats_rasterstats.ipynb
+data_raw/OneDrive_1_11-11-2025/cloud_Newcastle_2024.tif
+data_raw/OneDrive_1_11-11-2025/Newcastle_NZ04_2024.tif
+data_raw/OneDrive_1_11-11-2025/Newcastle_NZ06_2024.tif
+data_raw/OneDrive_1_11-11-2025/Newcastle_NZ24_2024.tif
+data_raw/OneDrive_1_11-11-2025/Newcastle_NZ26_2024.tif
+data_raw/OneDrive_1_11-11-2025/Newcastle_NZ44_2024.tif
+data_raw/OneDrive_1_11-11-2025/Newcastle_NZ46_2024.tif
+data_raw/OneDrive_1_11-11-2025/performance.txt
+data_raw/OneDrive_1_11-11-2025/Newcastle_NZ04_2024.tif.aux.xml
+data_raw/OneDrive_1_11-11-2025/Newcastle_NZ06_2024.tif.aux.xml
+data_raw/OneDrive_1_11-11-2025/Newcastle_NZ24_2024.tif.aux.xml
+data_raw/OneDrive_1_11-11-2025/Newcastle_NZ26_2024.tif.aux.xml
+data_raw/OneDrive_1_11-11-2025/Newcastle_NZ44_2024.tif.aux.xml
+data_raw/OneDrive_1_11-11-2025/Newcastle_NZ46_2024.tif.aux.xml
+*.tif
+data_raw/testing bounds/test_bounds.dbf
+data_raw/testing bounds/test_bounds.prj
+data_raw/testing bounds/test_bounds.shp
+data_raw/testing bounds/test_bounds.shx
+data_raw/testing bounds/test_bounds.cpg
+band_1.tif.aux.xml
+demo/data/uk_20km_grid.gpkg
+demo/data/uk_20km_grid.gpkg
+demo/data/uk_20km_grid.gpkg
