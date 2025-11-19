@@ -62,8 +62,6 @@ def process_tiles(tile_bbox, tile_name, input_cfg, output_cfg, dask_cfg):
         out_path = to_netcdf(ds,
                   out_path=f"{output_cfg['output_storage']}/{output_cfg['output_filename']}_{tile_name}.nc",
                   out_bands=list(ds.data_vars),
-                  time_dim=output_cfg["time_dim"],
-                  squeeze_time_dim=False,
                   out_dtype=output_cfg["out_dtype"])
 
     return out_path
