@@ -10,6 +10,7 @@ import geopandas as gpd
 import yaml, argparse
 
 def parse_args():
+    """Load in the config filepath from the command line, or set it to `config.yaml`"""
     parser = argparse.ArgumentParser(
         prog="SPF",
         description="Processing of cloud probability for the SPF data product",
@@ -28,15 +29,27 @@ def validate_config(input_cfg, output_cfg, dask_cfg):
     # JE - This should be an evolving thing as we add more config stuff. I include a pattern
     # here as an example for e.g. output format
     acceptable_output_formats = ["geotiff", "cog", "netcdf", "gtiff"]
+    # Default to netCDF if not specified
+    if not "output_format" in output_cfg:
+        input_cfg["output_format"] = "netcdf"
+
     if output_cfg["output_format"].lower() not in acceptable_output_formats:
         raise ValueError(f'Output format {output_cfg["output_format"]} is not acceptable, '
                          f'need one of {acceptable_output_formats}')
-    # if "geotiff" coerce to GTiff
+    # if "geotiff" coerce to GTiff as this is the required format
     elif output_cfg["output_format"].lower() == "geotiff":
         output_cfg["output_format"] = "GTiff"
+
     # pass-by-reference so don't need to return
 
+@delayed
 def process_tiles(tile_bbox, tile_name, input_cfg, output_cfg, dask_cfg):
+    """
+    Given a tilename and bounding box:
+        - Load in the tile and the bands we want at the specified resolution
+        - Apply masking and obtain the aggregated cloud probability
+        - Write it out to either geotiff, COG or netcdf
+    """
     tile = load_tile(
         tile_bbox=tile_bbox,
         collection=input_cfg["collection"],
@@ -114,7 +127,7 @@ def main():
     # before but I can't see it in any of the current repositories.
     # Do we need to_geotif and to_netcdf to be delayed also?
     tasks = [
-        delayed(process_tiles)(
+        process_tiles(
             [row.minx, row.miny, row.maxx, row.maxy],
             tiles.loc[row.name, "tile_name"],
             input_cfg, output_cfg, dask_cfg
