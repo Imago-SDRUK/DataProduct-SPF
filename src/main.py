@@ -1,7 +1,7 @@
 from dask.distributed import Client as DaskClient
 from dask.distributed import LocalCluster
 from dask_jobqueue import SLURMCluster
-from dask import compute
+from dask import compute, delayed
 from imago.io.downloader import load_tile
 from imago.io.output import to_geotif, to_netcdf
 from imago.utils.mask import apply_scl_mask
@@ -51,12 +51,22 @@ def process_tiles(tile_bbox, tile_name, input_cfg, output_cfg, dask_cfg):
     masked_tile = apply_scl_mask(tile, origin_band="cloud")
     ds = process_cloud(masked_tile)
     if output_cfg["output_format"].lower() in ['gtiff', 'cog']:
-        to_geotif(ds,
+        out_path = to_geotif(ds,
                   out_format=output_cfg["output_format"],
                   out_dtype=output_cfg["out_dtype"],
                   out_path=f"{output_cfg['output_storage']}/{output_cfg['output_filename']}_{tile_name}.tif",
                   out_bands=list(ds.data_vars),
                   time_dim=output_cfg["time_dim"])
+
+    elif output_cfg["output_format"].lower() == 'netcdf':
+        out_path = to_netcdf(ds,
+                  out_path=f"{output_cfg['output_storage']}/{output_cfg['output_filename']}_{tile_name}.nc",
+                  out_bands=list(ds.data_vars),
+                  time_dim=output_cfg["time_dim"],
+                  squeeze_time_dim=False,
+                  out_dtype=output_cfg["out_dtype"])
+
+    return out_path
 
 def main():
     """Main function that generates the cluster and performs the computation"""
@@ -100,17 +110,29 @@ def main():
 
     # Wait until we have at least 25% of the requested workers
     client.wait_for_workers(n_workers=dask_cfg["n_workers"] // 4, timeout=dask_cfg["client_worker_timeout"])
+
+    # build tasks lazily using dask.delayed
+    # JE - this should run lazily now I think? I recall we had something decorated with @delayed
+    # before but I can't see it in any of the current repositories.
+    # Do we need to_geotif and to_netcdf to be delayed also?
     tasks = [
-        process_tiles([row.minx, row.miny, row.maxx, row.maxy], tiles.loc[row.name, "tile_name"],
-                      input_cfg, output_cfg, dask_cfg)
+        delayed(process_tiles)(
+            [row.minx, row.miny, row.maxx, row.maxy],
+            tiles.loc[row.name, "tile_name"],
+            input_cfg, output_cfg, dask_cfg
+        )
         for _, row in tiles.bounds.iterrows()
     ]
 
-    # Break tasks into chunks
+    # create chunks - this should return the output paths now too
+    out_paths = []
     for i in range(0, len(tasks), dask_cfg["npartitions"]):
-        chunk = tasks[i : i + dask_cfg["npartitions"]]
-        results = compute(*chunk)
-    return results
+        chunk = tasks[i: i + dask_cfg["npartitions"]]
+        # compute returns a tuple of results for *chunk
+        out_paths.extend(compute(*chunk))
+
+    return out_paths
+
 
 if __name__ == "__main__":
     results = main()

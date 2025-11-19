@@ -14,7 +14,7 @@ input:
 
 output:
   output_storage: "/storage/TemporaryData/random_tiles"
-  output_filename: "cloudprob_uk_2024" #[Dataset]_[Region]_[TimePeriod]_[TileID].tif
+  output_filename: "cludprob_uk_2024" #[Dataset]_[Region]_[TimePeriod]_[TileID].<format>
   out_crs: 27700
   res: 20
   out_dtype: "float32"
