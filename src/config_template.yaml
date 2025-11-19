@@ -19,7 +19,7 @@ output:
   res: 20
   out_dtype: "float32"
   resampling: "nearest"
-  out_format: "GTiff"
+  output_format: "GTiff"
   time_dim: "year"
 
 dask:

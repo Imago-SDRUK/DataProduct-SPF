@@ -22,115 +22,94 @@ def parse_args():
     )
     return parser.parse_args()
 
-def process_tiles(tile_bbox, tile_name):
+def validate_config(input_cfg, output_cfg, dask_cfg):
+    """Check that fields in the config files have acceptable values"""
+    # JE - This should be an evolving thing as we add more config stuff. I include a pattern
+    # here as an example for e.g. output format
+    acceptable_output_formats = ["geotiff", "cog", "netcdf", "gtiff"]
+    if output_cfg["output_format"].lower() not in acceptable_output_formats:
+        raise ValueError(f'Output format {output_cfg["output_format"]} is not acceptable, '
+                         f'need one of {acceptable_output_formats}')
+    # if "geotiff" coerce to GTiff
+    elif output_cfg["output_format"].lower() == "geotiff":
+        output_cfg["output_format"] = "GTiff"
+    # pass-by-reference so don't need to return
+
+def process_tiles(tile_bbox, tile_name, input_cfg, output_cfg, dask_cfg):
     tile = load_tile(
         tile_bbox=tile_bbox,
-        collection=collection,
-        out_bands=out_bands,
-        start_date=start_date,
-        end_date=end_date,
-        out_resolution=out_resolution,
-        out_crs=out_crs,
-        chunks=chunks,
+        collection=input_cfg["collection"],
+        out_bands=input_cfg["bands_of_interest"],
+        start_date=input_cfg["time"]["start_date"],
+        end_date=input_cfg["time"]["end_date"],
+        out_resolution=output_cfg["res"],
+        out_crs=output_cfg["out_crs"],
+        chunks=dask_cfg["chunks"],
     )
 
     masked_tile = apply_scl_mask(tile, origin_band="cloud")
     ds = process_cloud(masked_tile)
-    to_geotif(ds,
-              out_format=out_format,
-              out_dtype = out_dtype, 
-              out_path=f"{output_storage}/{output_filename}_{tile_name}.tif", 
-              out_bands=list(ds.data_vars),
-              time_dim = time_dim)
+    if output_cfg["output_format"].lower() in ['gtiff', 'cog']:
+        to_geotif(ds,
+                  out_format=output_cfg["output_format"],
+                  out_dtype=output_cfg["out_dtype"],
+                  out_path=f"{output_cfg['output_storage']}/{output_cfg['output_filename']}_{tile_name}.tif",
+                  out_bands=list(ds.data_vars),
+                  time_dim=output_cfg["time_dim"])
+
 
 def main():
     """Main function that generates the cluster and performs the computation"""
 
     args = parse_args()
-
     with open(args.config_path, "r") as f:
         config = yaml.safe_load(f)
-    
-    # extract sections
+
+    # extract sections and validate
     input_cfg = config["input"]
     output_cfg = config["output"]
     dask_cfg = config["dask"]
+    validate_config(input_cfg, output_cfg, dask_cfg)
 
-    # make globals accessible to process_tiles
-    global tiles_file, collection, start_date, end_date, out_bands
-    global input_storage, output_storage, output_filename, out_crs
-    global out_resolution, out_dtype, resampling, out_format, time_dim
-    global chunks, npartitions, n_workers, threads_per_worker, memory_limit, dashboard_address
-    global local_cluster, core
+    # load in tiles file
+    tiles = gpd.read_file(f"{input_cfg['input_storage']}/{input_cfg['tiles']}")
 
-    # for each section, go through and get the variables of interest
-    # input params
-    tiles_file= input_cfg["tiles"]
-    collection = input_cfg["collection"]
-    start_date = input_cfg["time"]["start_date"]
-    end_date = input_cfg["time"]["end_date"]
-    out_bands = input_cfg["bands_of_interest"]
-    input_storage = input_cfg["input_storage"]
-    # output params
-    output_storage = output_cfg["output_storage"]
-    output_filename = output_cfg["output_filename"]
-    out_crs = output_cfg["out_crs"]
-    out_resolution = output_cfg["res"]
-    out_dtype = output_cfg["out_dtype"]
-    resampling = output_cfg["resampling"]
-    out_format = output_cfg["out_format"]
-    time_dim = output_cfg["time_dim"]
-    # dask/optimisation params
-    chunks = dask_cfg["chunks"]
-    npartitions = dask_cfg["npartitions"]
-    n_workers = dask_cfg["n_workers"]
-    threads_per_worker = dask_cfg["threads_per_worker"]
-    memory_limit = dask_cfg["memory_limit"]
-    dashboard_address = dask_cfg["dashboard_address"]
-    local_cluster = dask_cfg["local_cluster"]
-    cores = dask_cfg["cores"]
-    worker_walltime = dask_cfg["worker_walltime"]
-    job_extra_directives = dask_cfg["job_extra_directives"]
-
-    tiles = gpd.read_file(f"{input_storage}/{tiles_file}")
-
-    if local_cluster:
+    if dask_cfg["local_cluster"]:
         cluster = LocalCluster(
-            n_workers=n_workers,
-            threads_per_worker=threads_per_worker,
-            memory_limit=memory_limit,
-            dashboard_address=dashboard_address,
+            n_workers=dask_cfg["n_workers"],
+            threads_per_worker=dask_cfg["threads_per_worker"],
+            memory_limit=dask_cfg["memory"],
+            dashboard_address=dask_cfg["dashboard_address"],
         )
         client = DaskClient(cluster)
     else:
         cluster = SLURMCluster(
-            cores=cores,
-            processes=threads_per_worker,
-            memory=memory_limit,
+            cores=dask_cfg["cores"],
+            processes=dask_cfg["threads_per_worker"],
+            memory=dask_cfg["memory"],
             shebang="#!/usr/bin/env bash",
-            walltime=worker_walltime,
+            walltime=dask_cfg["worker_walltime"],
             local_directory="/tmp",
             log_directory="/tmp",
             death_timeout="30s",
-            job_extra_directives=job_extra_directives,
+            job_extra_directives=dask_cfg["job_extra_directives"],
         )
 
         client = DaskClient(cluster)
-        cluster.scale(jobs=n_workers)
+        cluster.scale(jobs=dask_cfg["n_workers"])
 
-    while len(cluster.scheduler.workers) < 5: # wait for at least 5 workers to be ready
-        time.sleep(1)
-
-
-    tasks= [
-        process_tiles([row.minx, row.miny, row.maxx, row.maxy], tiles.loc[row.name, "tile_name"])
+    # Wait until we have at least 25% of the requested workers
+    client.wait_for_workers(n_workers=dask_cfg["n_workers"] // 4, timeout=dask_cfg["client_worker_timeout"])
+    tasks = [
+        process_tiles([row.minx, row.miny, row.maxx, row.maxy], tiles.loc[row.name, "tile_name"],
+                      input_cfg, output_cfg, dask_cfg)
         for _, row in tiles.bounds.iterrows()
     ]
-    # Break tasks into chunks
-    for i in range(0, len(tasks), npartitions):
-        chunk = tasks[i : i + npartitions]
-        results = compute(*chunk)
 
+    # Break tasks into chunks
+    for i in range(0, len(tasks), dask_cfg["npartitions"]):
+        chunk = tasks[i : i + dask_cfg["npartitions"]]
+        results = compute(*chunk)
     return results
 
 if __name__ == "__main__":
