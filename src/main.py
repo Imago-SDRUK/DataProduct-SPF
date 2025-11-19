@@ -2,11 +2,12 @@ from dask.distributed import Client as DaskClient
 from dask.distributed import LocalCluster
 from dask_jobqueue import SLURMCluster
 from dask import compute
-from imago.io.downloader import load_tile, to_geotif
+from imago.io.downloader import load_tile
+from imago.io.output import to_geotif, to_netcdf
 from imago.utils.mask import apply_scl_mask
 from imago.spf.process import process_cloud
 import geopandas as gpd
-import yaml, argparse, time
+import yaml, argparse
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -56,7 +57,6 @@ def process_tiles(tile_bbox, tile_name, input_cfg, output_cfg, dask_cfg):
                   out_path=f"{output_cfg['output_storage']}/{output_cfg['output_filename']}_{tile_name}.tif",
                   out_bands=list(ds.data_vars),
                   time_dim=output_cfg["time_dim"])
-
 
 def main():
     """Main function that generates the cluster and performs the computation"""
