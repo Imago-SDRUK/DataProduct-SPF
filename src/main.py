@@ -7,10 +7,13 @@ from imago.io.output import to_geotif, to_netcdf
 from imago.utils.mask import apply_scl_mask
 from imago.spf.process import process_cloud
 import geopandas as gpd
-import yaml, argparse
+import yaml
+import argparse
+
 
 def parse_args():
-    """Load in the config filepath from the command line, or set it to `config.yaml`"""
+    """Load in the config filepath from the command line,
+    or set it to `config.yaml`"""
     parser = argparse.ArgumentParser(
         prog="SPF",
         description="Processing of cloud probability for the SPF data product",
@@ -24,23 +27,34 @@ def parse_args():
     )
     return parser.parse_args()
 
+
 def validate_config(input_cfg, output_cfg, dask_cfg):
     """Check that fields in the config files have acceptable values"""
-    # JE - This should be an evolving thing as we add more config stuff. I include a pattern
-    # here as an example for e.g. output format
+    # JE - This should be an evolving thing as we add more config stuff.
+    # I include a pattern here as an example for e.g. output format
+
+    # Output configuration
     acceptable_output_formats = ["geotiff", "cog", "netcdf", "gtiff"]
     # Default to netCDF if not specified
-    if not "output_format" in output_cfg:
+    if "output_format" not in output_cfg:
         input_cfg["output_format"] = "netcdf"
 
     if output_cfg["output_format"].lower() not in acceptable_output_formats:
-        raise ValueError(f'Output format {output_cfg["output_format"]} is not acceptable, '
-                         f'need one of {acceptable_output_formats}')
-    # if "geotiff" coerce to GTiff as this is the required format
+        raise ValueError(
+            f'Output format {output_cfg["output_format"]} is not acceptable, '
+            f"need one of {acceptable_output_formats}"
+        )
+    # if "geotiff" coerce to GTiff as this is the required formatting string
     elif output_cfg["output_format"].lower() == "geotiff":
         output_cfg["output_format"] = "GTiff"
 
+    # Dask configuration
+    # set client_worker_timeout to None by default (i.e. it will wait
+    # until we have n/4 workers indefinitely.
+    if "client_worker_timeout" not in dask_cfg:
+        dask_cfg["client_worker_timeout"] = None
     # pass-by-reference so don't need to return
+
 
 @delayed
 def process_tiles(tile_bbox, tile_name, input_cfg, output_cfg, dask_cfg):
@@ -63,21 +77,28 @@ def process_tiles(tile_bbox, tile_name, input_cfg, output_cfg, dask_cfg):
 
     masked_tile = apply_scl_mask(tile, origin_band="cloud")
     ds = process_cloud(masked_tile)
-    if output_cfg["output_format"].lower() in ['gtiff', 'cog']:
-        out_path = to_geotif(ds,
-                  out_format=output_cfg["output_format"],
-                  out_dtype=output_cfg["out_dtype"],
-                  out_path=f"{output_cfg['output_storage']}/{output_cfg['output_filename']}_{tile_name}.tif",
-                  out_bands=list(ds.data_vars),
-                  time_dim=output_cfg["time_dim"])
+    if output_cfg["output_format"].lower() in ["gtiff", "cog"]:
+        out_path = to_geotif(
+            ds,
+            out_format=output_cfg["output_format"],
+            out_dtype=output_cfg["out_dtype"],
+            out_path=f"{output_cfg['output_storage']}/"
+            f"{output_cfg['output_filename']}_{tile_name}.tif",
+            out_bands=list(ds.data_vars),
+            time_dim=output_cfg["time_dim"],
+        )
 
-    elif output_cfg["output_format"].lower() == 'netcdf':
-        out_path = to_netcdf(ds,
-                  out_path=f"{output_cfg['output_storage']}/{output_cfg['output_filename']}_{tile_name}.nc",
-                  out_bands=list(ds.data_vars),
-                  out_dtype=output_cfg["out_dtype"])
+    elif output_cfg["output_format"].lower() == "netcdf":
+        out_path = to_netcdf(
+            ds,
+            out_path=f"{output_cfg['output_storage']}/"
+            f"{output_cfg['output_filename']}_{tile_name}.nc",
+            out_bands=list(ds.data_vars),
+            out_dtype=output_cfg["out_dtype"],
+        )
 
     return out_path
+
 
 def main():
     """Main function that generates the cluster and performs the computation"""
@@ -120,17 +141,19 @@ def main():
         cluster.scale(jobs=dask_cfg["n_workers"])
 
     # Wait until we have at least 25% of the requested workers
-    client.wait_for_workers(n_workers=dask_cfg["n_workers"] // 4, timeout=dask_cfg["client_worker_timeout"])
+    client.wait_for_workers(
+        n_workers=dask_cfg["n_workers"] // 4,
+        timeout=dask_cfg["client_worker_timeout"],
+    )
 
     # build tasks lazily using dask.delayed
-    # JE - this should run lazily now I think? I recall we had something decorated with @delayed
-    # before but I can't see it in any of the current repositories.
-    # Do we need to_geotif and to_netcdf to be delayed also?
     tasks = [
         process_tiles(
             [row.minx, row.miny, row.maxx, row.maxy],
             tiles.loc[row.name, "tile_name"],
-            input_cfg, output_cfg, dask_cfg
+            input_cfg,
+            output_cfg,
+            dask_cfg,
         )
         for _, row in tiles.bounds.iterrows()
     ]
@@ -138,7 +161,7 @@ def main():
     # create chunks - this should return the output paths now too
     out_paths = []
     for i in range(0, len(tasks), dask_cfg["npartitions"]):
-        chunk = tasks[i: i + dask_cfg["npartitions"]]
+        chunk = tasks[i : i + dask_cfg["npartitions"]]
         # compute returns a tuple of results for *chunk
         out_paths.extend(compute(*chunk))
 

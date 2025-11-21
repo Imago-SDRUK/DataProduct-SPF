@@ -35,3 +35,4 @@ dask:
   job_extra_directives: [
                 "--gres=gpu:0"
                 ]
+  client_worker_timeout: None
