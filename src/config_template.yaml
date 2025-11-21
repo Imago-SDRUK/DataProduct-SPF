@@ -1,0 +1,38 @@
+# Configuration template file. The intent is that we can avoid hard-coding
+# things within the Python files by parameterising them here, which will make
+# running multiple jobs easier.
+# Filepaths in this template are those used on Isambard.
+
+input:
+  tiles: "data/uk_20km_grid.gpkg"
+  collection: "element84-s2"
+  time:
+    start_date: "2024-01-01"
+    end_date: "2024-12-31"
+  bands_of_interest: [ "cloud", "scl" ]
+  input_storage: "/storage/DataLake"
+
+output:
+  output_storage: "/storage/TemporaryData/random_tiles"
+  output_filename: "cludprob_uk_2024" #[Dataset]_[Region]_[TimePeriod]_[TileID].<format>
+  out_crs: 27700
+  res: 20
+  out_dtype: "float32"
+  resampling: "nearest"
+  output_format: "GTiff"
+  time_dim: "year"
+
+dask:
+  chunks: { "time": 20, "x": 250, "y": 250 }  # or None
+  npartitions: 35 # Split up tiles into n chunks
+  n_workers: 30
+  threads_per_worker: 1
+  memory_limit: "35GB"
+  local_cluster: True  # If true, use LocalCluster; if false, use SLURMCluster
+  cores: 72  # Only used if local_cluster is false
+  dashboard_address: 8787
+  worker_walltime: "12:00:00"
+  job_extra_directives: [
+                "--gres=gpu:0"
+                ]
+  client_worker_timeout: None
